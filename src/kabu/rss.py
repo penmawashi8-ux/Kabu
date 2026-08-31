@@ -89,8 +89,43 @@ class ExcelBridge:
             running = bool(list(xw.apps))
         except Exception:  # pragma: no cover - 数えられないなら起動していない扱い
             running = False
-        app = xw.apps.active if running else xw.App(visible=self._config.excel.visible, add_book=False)
+        if running:
+            app = xw.apps.active
+        else:
+            # 自分で起動した Excel はアドインを読み込まないので、ここで入れる。
+            app = xw.App(visible=self._config.excel.visible, add_book=False)
+            self._load_rss_addins(app)
         return app.books.open(path)
+
+    def _load_rss_addins(self, app: Any) -> None:
+        """kabu が起動した Excel に RSS アドインを読み込ませる。
+
+        COM（自動化）で起動した Excel は、利用者が「ファイル → オプション →
+        アドイン」で登録したアドインを自動では読み込まない。そのままだと
+        =RssMarket(...) が未定義のままになり、株価が 1 件も取れない。
+
+        読み込めなくても致命傷にはしない。利用者が自分で開いた Excel に
+        繋ぐ道（そちらはアドインが入っている）が残っているため。
+        """
+        from .excelinfo import VBA_ADDIN, addin_dir, detect_excel
+
+        folder = addin_dir()
+        xll_name = detect_excel().xll_name
+        targets = [folder / xll_name] if xll_name else []
+        targets.append(folder / VBA_ADDIN)
+
+        for target in targets:
+            if not target.exists():
+                log.warning("RSS アドインが見つかりません: %s", target)
+                continue
+            try:
+                if target.suffix.lower() == ".xll":
+                    app.api.RegisterXLL(str(target))
+                else:
+                    app.api.Workbooks.Open(str(target))
+                log.info("RSS アドインを読み込みました: %s", target.name)
+            except Exception:
+                log.warning("RSS アドインを読み込めませんでした: %s", target, exc_info=True)
 
     def _sheet(self, name: str) -> Any:
         try:
@@ -146,8 +181,13 @@ class ExcelBridge:
                 out[symbol] = float(price)
         if not out:
             raise QuoteError(
-                "QUOTES シートから有効な株価を 1 件も取得できませんでした。"
-                "マーケットスピードII にログイン済みか、RSS アドインが有効か確認してください。"
+                "QUOTES シートから有効な株価を 1 件も取得できませんでした。\n"
+                "  1. マーケットスピードII を起動してログインしていますか\n"
+                "  2. QUOTES シートの現在値の列は何になっていますか\n"
+                "     #NAME? → その Excel に RSS アドインが入っていません。"
+                "Excel を自分で開いてから kabu を起動し直してください\n"
+                "     空欄   → マーケットスピードII 側から値が来ていません\n"
+                "  3. Excel とマーケットスピードII の権限（管理者で実行しているか）は揃っていますか"
             )
         return out
 
