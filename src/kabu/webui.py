@@ -32,6 +32,9 @@ _HISTORY_POINTS = 240
 _MAX_EVENTS = 60
 _MAX_RULES = 12
 
+# dashboard.html は Artifact としても公開できるよう、doctype や <head> を持たない
+# 断片として書いてある。ブラウザに直接食わせるときはここで包む。
+# charset は必ず先頭に置くこと（日本語が化ける）。
 _PAGE_SKELETON = """<!doctype html>
 <html lang="ja">
 <head>
@@ -48,6 +51,16 @@ _PAGE_SKELETON = """<!doctype html>
 <body></body>
 </html>
 """
+
+
+def dashboard_source() -> str:
+    """画面本体（Artifact 用の断片）。"""
+    return (Path(__file__).parent / "dashboard.html").read_text(encoding="utf-8")
+
+
+def render_standalone_page(body: str | None = None) -> str:
+    """断片を、単体で開ける 1 枚の HTML に包む。"""
+    return _PAGE_SKELETON.format(body=body if body is not None else dashboard_source())
 
 
 class GameFeed:
@@ -309,8 +322,7 @@ class GameSession:
 
 
 def _load_page() -> str:
-    html = (Path(__file__).parent / "dashboard.html").read_text(encoding="utf-8")
-    return _PAGE_SKELETON.format(body=html)
+    return render_standalone_page()
 
 
 class _Handler(BaseHTTPRequestHandler):

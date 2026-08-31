@@ -38,6 +38,23 @@
 
 楽天証券の口座も Excel も無しで、いきなり動きを見られます。**証券会社には一切接続しません。**
 
+### いちばん手軽な方法: `simulator.html` をダブルクリック
+
+インストールも Python も要りません。リポジトリの **`simulator.html`** を
+ダウンロードしてブラウザで開くだけです（[GitHub の Raw リンクから保存](
+https://github.com/penmawashi8-ux/Kabu/raw/claude/rakuten-securities-auto-trading-c4nmiz/simulator.html)）。
+ネットに繋がっていなくても動きます。
+
+この 1 枚版は**ブラウザの中だけで動くお試し版**です。銘柄の追加も推奨値も
+スライダーも一通り使えますが、株価は擬似のみで、記録はファイルに残りません。
+本物の売買ロジック（`strategy.py` / `risk.py`）を回したいときは、下の `kabu play` を使ってください。
+
+> `simulator.html` は `src/kabu/dashboard.html` から自動生成しています。
+> 画面を直したら `python tools/build_standalone.py` で作り直してください
+> （忘れるとテストが落ちます）。
+
+### 本物のロジックで動かす: `kabu play`
+
 ```powershell
 git clone https://github.com/penmawashi8-ux/Kabu.git
 cd Kabu
@@ -253,7 +270,7 @@ src/kabu/
   cli.py           コマンドライン入口
   webui.py         kabu play のサーバ（本物の Runner を回して状態を JSON で配る）
   marketdata.py    実際の株価の取得（stooq / Yahoo）と早送り再生
-  dashboard.html   シミュレーター画面（単体で開けばブラウザ内デモとしても動く）
+  dashboard.html   シミュレーター画面の本体（Artifact 用の断片）
   runner.py        売買ループ本体（取得 → 約定確認 → 判定 → 発注）
   strategy.py      価格トリガーの判定（純関数・副作用なし）
   risk.py          安全弁
@@ -270,7 +287,7 @@ src/kabu/
 本番と同じコードパスをテストで検証できます。
 
 ```powershell
-pytest                   # 80 件。Windows / Mac / Linux いずれでも実行できます
+pytest                   # 87 件。Windows / Mac / Linux いずれでも実行できます
 ```
 
 ## RSS の関数名について
