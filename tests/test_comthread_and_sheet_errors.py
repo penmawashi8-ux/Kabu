@@ -71,3 +71,112 @@ def test_com_failure_is_not_reported_as_a_missing_sheet():
     with pytest.raises(BrokerError, match="Excel に問い合わせできませんでした") as exc:
         bridge._sheet("QUOTES")
     assert "CoInitialize" in str(exc.value)
+
+
+# ------------------------------------------------- Excel が起動していない場合
+
+class _FakeApps:
+    """xlwings の xw.apps を真似る。Excel 未起動なら空。"""
+
+    def __init__(self, apps=(), *, raises=False) -> None:
+        self._apps = list(apps)
+        self._raises = raises
+
+    def __iter__(self):
+        if self._raises:
+            raise RuntimeError("Couldn't find any active App!")
+        return iter(self._apps)
+
+    @property
+    def active(self):
+        return self._apps[0]
+
+
+class _FakeBook:
+    def __init__(self, fullname) -> None:
+        self.fullname = fullname
+
+
+class _FakeApp:
+    def __init__(self, books=(), *, opened=None) -> None:
+        self.books = _FakeBookCollection(books, opened=opened)
+
+
+class _FakeBookCollection:
+    def __init__(self, books=(), *, opened=None) -> None:
+        self._books = list(books)
+        self._opened = opened
+        self.opened_path = None
+
+    def __iter__(self):
+        return iter(self._books)
+
+    def open(self, path):
+        self.opened_path = path
+        return self._opened or _FakeBook(path)
+
+
+class _FakeXw:
+    """必要なぶんだけの xlwings スタブ。"""
+
+    def __init__(self, apps, *, books_raises=False) -> None:
+        self.apps = apps
+        self.created_app = None
+        self._books_raises = books_raises
+
+    @property
+    def books(self):
+        if self._books_raises:
+            raise RuntimeError("Couldn't find any active App!")
+        return iter([])
+
+    def App(self, visible=True, add_book=False):  # noqa: N802 - xlwings の API 名
+        self.created_app = _FakeApp()
+        return self.created_app
+
+
+def _bridge_with_xw(xw, config) -> ExcelBridge:
+    bridge = ExcelBridge.__new__(ExcelBridge)
+    bridge._xw = xw
+    bridge._config = config
+    return bridge
+
+
+def test_starts_excel_when_none_is_running(tmp_path, config_factory):
+    """Excel が 1 つも起動していなくても、起動してブックを開く（例外で落ちない）。"""
+    from dataclasses import replace
+
+    from kabu.config import ExcelConfig
+
+    workbook = tmp_path / "quotes.xlsx"
+    workbook.write_text("", encoding="utf-8")
+    config = config_factory()
+    config = replace(config, excel=ExcelConfig(workbook=str(workbook)))
+
+    xw = _FakeXw(_FakeApps(raises=True), books_raises=True)
+    bridge = _bridge_with_xw(xw, config)
+
+    bridge._open_book()
+
+    assert xw.created_app is not None, "Excel 未起動なら新しく起動すること"
+    assert xw.created_app.books.opened_path == str(workbook)
+
+
+def test_reuses_a_book_already_open_in_a_background_excel(tmp_path, config_factory):
+    """アクティブでない Excel で開かれているブックも見つけて使い回す。"""
+    from dataclasses import replace
+
+    from kabu.config import ExcelConfig
+
+    workbook = tmp_path / "quotes.xlsx"
+    workbook.write_text("", encoding="utf-8")
+    config = config_factory()
+    config = replace(config, excel=ExcelConfig(workbook=str(workbook)))
+
+    already_open = _FakeBook(str(workbook))
+    background = _FakeApp(books=[already_open])
+    xw = _FakeXw(_FakeApps([background]))
+    bridge = _bridge_with_xw(xw, config)
+
+    assert bridge._open_book() is already_open
+    assert xw.created_app is None, "既に開いているなら Excel を新たに起動しない"
