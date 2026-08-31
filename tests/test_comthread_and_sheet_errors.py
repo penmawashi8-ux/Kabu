@@ -180,3 +180,72 @@ def test_reuses_a_book_already_open_in_a_background_excel(tmp_path, config_facto
 
     assert bridge._open_book() is already_open
     assert xw.created_app is None, "既に開いているなら Excel を新たに起動しない"
+
+
+# ------------------------------------- 自分で起動した Excel へのアドイン読込
+
+class _FakeApi:
+    def __init__(self, *, register_fails=False) -> None:
+        self.registered: list[str] = []
+        self.opened: list[str] = []
+        self._register_fails = register_fails
+        self.Workbooks = self
+
+    def RegisterXLL(self, path):  # noqa: N802 - Excel の API 名
+        if self._register_fails:
+            raise RuntimeError("読み込めません")
+        self.registered.append(path)
+
+    def Open(self, path):  # noqa: N802 - Excel の API 名
+        self.opened.append(path)
+
+
+def _addin_bridge(monkeypatch, tmp_path, *, files, bitness="64"):
+    from kabu import excelinfo, rss as rss_module
+
+    folder = tmp_path / "rss"
+    folder.mkdir()
+    for name in files:
+        (folder / name).write_text("", encoding="utf-8")
+    monkeypatch.setattr(excelinfo, "addin_dir", lambda: folder)
+    monkeypatch.setattr(
+        excelinfo, "detect_excel", lambda: excelinfo.ExcelInfo(bitness, "テスト")
+    )
+    bridge = rss_module.ExcelBridge.__new__(rss_module.ExcelBridge)
+    return bridge, folder
+
+
+def test_loads_both_rss_addins_into_an_excel_we_started(monkeypatch, tmp_path):
+    """COM で起動した Excel はアドインを自動で読まないので、明示的に入れる。"""
+    bridge, folder = _addin_bridge(
+        monkeypatch, tmp_path,
+        files=["MarketSpeed2_RSS_64bit.xll", "MarketSpeed2_RSS_VBA.xlam"],
+    )
+    app = type("App", (), {"api": _FakeApi()})()
+
+    bridge._load_rss_addins(app)
+
+    assert app.api.registered == [str(folder / "MarketSpeed2_RSS_64bit.xll")]
+    assert app.api.opened == [str(folder / "MarketSpeed2_RSS_VBA.xlam")]
+
+
+def test_missing_addin_files_do_not_raise(monkeypatch, tmp_path):
+    """アドインが見つからなくても落ちない（利用者が開いた Excel に繋ぐ道を残す）。"""
+    bridge, _ = _addin_bridge(monkeypatch, tmp_path, files=[])
+    app = type("App", (), {"api": _FakeApi()})()
+
+    bridge._load_rss_addins(app)  # 例外が出ないこと
+
+    assert app.api.registered == []
+
+
+def test_addin_load_failure_does_not_raise(monkeypatch, tmp_path):
+    bridge, folder = _addin_bridge(
+        monkeypatch, tmp_path,
+        files=["MarketSpeed2_RSS_64bit.xll", "MarketSpeed2_RSS_VBA.xlam"],
+    )
+    app = type("App", (), {"api": _FakeApi(register_fails=True)})()
+
+    bridge._load_rss_addins(app)  # 例外が出ないこと
+
+    assert app.api.opened == [str(folder / "MarketSpeed2_RSS_VBA.xlam")], "片方失敗でも続行する"
