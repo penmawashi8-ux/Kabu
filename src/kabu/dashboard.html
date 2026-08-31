@@ -149,9 +149,8 @@
   .badge[data-source="rss"]    .dot { background: var(--good); }
 
   .safe-note {
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    /* flex で並べると「お金は動きません。」が途中で折れるので通常の文章として流す */
+    margin: 0;
     padding: 10px 14px;
     border: 1px solid var(--ring);
     border-left: 3px solid var(--good);
@@ -251,6 +250,7 @@
     appearance: slider-vertical;
     width: 26px;
     flex: 1 1 auto;
+    min-height: 130px;   /* 指でつまめる長さを確保する */
     margin: 0;
     accent-color: var(--accent);
     cursor: ns-resize;
@@ -462,10 +462,22 @@
   }
 
   @media (max-width: 560px) {
-    .plot-area { padding-inline: 12px; }
+    .wrap { padding: 16px 12px 48px; gap: 14px; }
+    header.masthead h1 { font-size: 19px; }
+    .plot-area { padding: 10px 12px 4px; gap: 6px; }
     .board-head, .board-controls, .board-foot { padding-inline: 12px; }
+    .board-head { gap: 6px 10px; padding-block: 11px; }
+    .board-head .spacer { flex-basis: 100%; height: 0; }
+    .editor-body { padding: 12px; gap: 10px 12px; }
+    .editor-hint, .editor-actions { padding-inline: 12px; }
     th, td { padding-inline: 12px; }
     .legend { margin-left: 0; width: 100%; }
+    .stat { padding: 11px 13px; }
+    .stat .value { font-size: 21px; }
+    /* 指で押せる大きさにする */
+    button { padding: 9px 14px; }
+    .board-controls button { flex: 1 1 auto; }
+    .ladder { width: 40px; }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -869,8 +881,22 @@
   // ====================================================================
   //  チャート描画
   // ====================================================================
-  // PAD_R は右側の価格ラベル（"損切 2,700" が最長）が収まる幅を確保する。
-  const W = 640, H = 200, PAD_L = 8, PAD_R = 96, PAD_T = 10, PAD_B = 20;
+  /** 描画寸法。SVG の 1 単位を 1 CSS ピクセルに合わせるので、
+      画面幅が変わっても文字の大きさは変わらない（スマホで潰れない）。 */
+  function geometry(svg) {
+    const width = Math.max(240, Math.round(svg.clientWidth || 640));
+    const narrow = width < 520;
+    return {
+      W: width,
+      H: narrow ? 208 : 200,
+      PAD_L: 8,
+      // 広い画面は線の右に価格を置く。狭い画面はその余白が惜しいので線の上に置く。
+      PAD_R: narrow ? 10 : 96,
+      PAD_T: narrow ? 20 : 10,
+      PAD_B: 20,
+      narrow,
+    };
+  }
 
   /** 1,2,5 × 10^n のうち target に近いもの。ボタンの刻み幅に使う。 */
   function niceStep(target) {
@@ -894,6 +920,8 @@
   }
 
   function drawChart(svg, rule, history, hoverIdx) {
+    const g = geometry(svg);
+    const { W, H, PAD_L, PAD_R, PAD_T, PAD_B, narrow } = g;
     const [lo, hi] = domainOf(rule);
     const plotW = W - PAD_L - PAD_R;
     const plotH = H - PAD_T - PAD_B;
@@ -914,12 +942,17 @@
     }
     for (const l of lines) {
       const yy = y(l.v);
+      const label = `${esc(l.t)} ${esc(fmtPrice(l.v))}`;
       parts.push(
         `<line x1="${PAD_L}" y1="${yy.toFixed(1)}" x2="${(W - PAD_R).toFixed(1)}" y2="${yy.toFixed(1)}"
                stroke="${l.c}" stroke-width="2" stroke-dasharray="${l.dash}" />`,
-        `<text x="${W - PAD_R + 6}" y="${(yy + 4).toFixed(1)}" fill="${l.c}"
-               font-size="11" font-weight="600"
-               font-family="'IBM Plex Mono', ui-monospace, monospace">${esc(l.t)} ${esc(fmtPrice(l.v))}</text>`
+        narrow
+          ? `<text x="${PAD_L + 2}" y="${(yy - 5).toFixed(1)}" fill="${l.c}"
+                   font-size="11" font-weight="600"
+                   font-family="'IBM Plex Mono', ui-monospace, monospace">${label}</text>`
+          : `<text x="${W - PAD_R + 6}" y="${(yy + 4).toFixed(1)}" fill="${l.c}"
+                   font-size="11" font-weight="600"
+                   font-family="'IBM Plex Mono', ui-monospace, monospace">${label}</text>`
       );
     }
 
@@ -960,8 +993,9 @@
     parts.push(`<text x="${(W - PAD_R).toFixed(1)}" y="${H - 6}" fill="var(--ink-muted)"
                       font-size="10" text-anchor="end">いま</text>`);
 
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
     svg.innerHTML = parts.join("");
-    svg._geom = { x, y, n, lo, hi };
+    svg._geom = { x, y, n, lo, hi, g };
   }
 
   // ====================================================================
@@ -974,6 +1008,10 @@
   let dragging = null;
   let currentRules = [];
   let manualAllowed = true;
+  // 手で動かした直後にサーバの値で上書きすると、連打したぶんが消える。
+  // 反映が返ってくるまでの猶予として、銘柄ごとに「触った時刻」を覚えておく。
+  const touchedUntil = new Map();
+  const LOCAL_EDIT_GRACE_MS = 1500;
   let sourceKind = "sim";
   let ruleSignature = "";
   let editingId = null;
@@ -995,7 +1033,7 @@
       </div>
       <div class="plot-area">
         <div class="plot-svg-holder">
-          <svg viewBox="0 0 ${W} ${H}" role="img"
+          <svg viewBox="0 0 640 200" role="img"
                aria-label="${rule.symbol} の株価と売買トリガー"></svg>
         </div>
         <div class="ladder">
@@ -1028,9 +1066,11 @@
     const slider = el.querySelector('[data-role="slider"]');
 
     const nudge = (delta) => {
-      const next = Number(slider.value) + delta;
+      const bounds = [Number(slider.min), Number(slider.max)];
+      const next = Math.min(bounds[1], Math.max(bounds[0], Number(slider.value) + delta));
       slider.value = String(next);
-      engine.setPrice(rule.symbol, Number(slider.value));
+      touchedUntil.set(rule.id, Date.now() + LOCAL_EDIT_GRACE_MS);
+      engine.setPrice(rule.symbol, next);
     };
     el.querySelector('[data-role="up"]').addEventListener("click", () => nudge(step));
     el.querySelector('[data-role="down"]').addEventListener("click", () => nudge(-step));
@@ -1040,6 +1080,7 @@
     slider.addEventListener("pointerdown", () => { dragging = rule.symbol; });
     slider.addEventListener("input", () => {
       dragging = rule.symbol;
+      touchedUntil.set(rule.id, Date.now() + LOCAL_EDIT_GRACE_MS);
       engine.setPrice(rule.symbol, Number(slider.value));
     });
     const release = () => { if (dragging === rule.symbol) dragging = null; };
@@ -1051,9 +1092,10 @@
       const card = cards.get(rule.id);
       const hist = card.history || [];
       if (!hist.length || !svg._geom) return;
+      const { g } = svg._geom;
       const box = svg.getBoundingClientRect();
-      const rel = ((ev.clientX - box.left) / box.width) * W;
-      const frac = (rel - PAD_L) / (W - PAD_L - PAD_R);
+      const rel = ((ev.clientX - box.left) / box.width) * g.W;
+      const frac = (rel - g.PAD_L) / (g.W - g.PAD_L - g.PAD_R);
       const idx = Math.max(0, Math.min(hist.length - 1, Math.round(frac * (hist.length - 1))));
       card.hover = idx;
       const point = hist[idx];
@@ -1071,6 +1113,17 @@
       card.hover = null;
       drawChart(svg, card.rule, card.history || [], null);
     });
+
+    // 幅が変われば寸法も変わるので描き直す（端末の回転、ウィンドウの変更）
+    if (typeof ResizeObserver === "function") {
+      let lastWidth = 0;
+      new ResizeObserver(() => {
+        const card = cards.get(rule.id);
+        if (!card || svg.clientWidth === lastWidth) return;
+        lastWidth = svg.clientWidth;
+        drawChart(svg, card.rule, card.history || [], card.hover);
+      }).observe(svg);
+    }
 
     return { el, svg, slider, rule, history: [], hover: null };
   }
@@ -1140,7 +1193,9 @@
       card.el.querySelector('[data-role="note"]').textContent =
         (rule.note ? rule.note + " · " : "") + cyc;
 
-      if (dragging !== rule.symbol) card.slider.value = String(rule.price);
+      const heldLocally = dragging === rule.symbol
+        || Date.now() < (touchedUntil.get(rule.id) || 0);
+      if (!heldLocally) card.slider.value = String(rule.price);
       card.slider.disabled = !!snap.auto || !manualAllowed;
 
       if (rule.position_qty && rule.entry_price) {

@@ -222,7 +222,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     play = sub.add_parser("play", help="ブラウザで動きが見えるシミュレーターを開く")
     play.add_argument("--port", type=int, default=8765, help="待ち受けポート (既定: 8765)")
-    play.add_argument("--host", default="127.0.0.1", help="待ち受けアドレス (既定: 127.0.0.1)")
+    play.add_argument("--host", default="127.0.0.1",
+                      help="待ち受けアドレス (既定: 127.0.0.1)。"
+                           "スマホなど同じ Wi-Fi の別端末から見るには 0.0.0.0")
+    play.add_argument("--lan", dest="host", action="store_const", const="0.0.0.0",
+                      help="--host 0.0.0.0 の短縮。スマホから見たいときはこれ")
     play.add_argument("--market-hours", dest="anytime", action="store_false",
                       help="立会時間内でしか動かさない（既定はいつでも動く）")
     play.add_argument("--state", default="play_state.json", help="シミュレーション用の状態ファイル")

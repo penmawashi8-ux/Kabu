@@ -389,6 +389,19 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
 
 
+def _lan_address() -> str | None:
+    """同じ Wi-Fi の別端末から届くアドレスを調べる（実際には送信しない）。"""
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.settimeout(0.2)
+            probe.connect(("192.0.2.1", 9))   # 到達しない前提のテスト用アドレス
+            return probe.getsockname()[0]
+    except OSError:
+        return None
+
+
 def serve(config: Config, host: str = "127.0.0.1", port: int = 8765,
           feed_factory=None, banner: str = "") -> None:
     session = GameSession(config, feed_factory)
@@ -402,7 +415,15 @@ def serve(config: Config, host: str = "127.0.0.1", port: int = 8765,
     print("  シミュレーターを起動しました（お金は動きません）")
     if banner:
         print(f"  {banner}")
-    print(f"  ブラウザで開いてください →  {url}")
+    print(f"  このPCから    →  {url}")
+
+    if host not in ("127.0.0.1", "localhost"):
+        lan = _lan_address()
+        if lan:
+            print(f"  スマホから    →  http://{lan}:{port}/   （同じ Wi-Fi に繋いでください）")
+        print("  ※ 同じネットワークの人は誰でもこの画面を開けます。"
+              "発注はシミュレーションのみなので実害はありませんが、"
+              "使い終わったら Ctrl-C で止めてください。")
     print("  終了するには Ctrl-C")
     print()
 
