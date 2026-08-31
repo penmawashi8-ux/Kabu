@@ -4,6 +4,7 @@
     kabu init-sheet  RSS 用の Excel ブックの雛形を作る
     kabu status      現在の状態を表示する
     kabu run         売買ループを開始する
+    kabu backtest    過去の実データでルールを検証する（発注しない）
 """
 
 from __future__ import annotations
@@ -289,6 +290,86 @@ def cmd_init_sheet(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backtest(args: argparse.Namespace) -> int:
+    """過去の実データで「このルールならどうなっていたか」を確かめる（発注しない）。"""
+    from datetime import date as _date
+
+    from .backtest import run_backtest
+    from .marketdata import MarketDataError, fetch_many
+
+    config = load_config(args.config)
+    setup_logging(config.log_file, verbose=args.verbose, timezone=config.market.timezone)
+
+    symbols = sorted({r.symbol for r in config.rules})
+    print(f"実データを取得しています（{args.provider}）… {', '.join(symbols)}")
+    try:
+        bars = fetch_many(symbols, provider=args.provider, cache_dir=args.cache_dir)
+    except MarketDataError as exc:
+        print(f"\n実データを取得できませんでした:\n  {exc}\n")
+        print("ネットワーク（社内プロキシなど）を確認するか、--provider yahoo を試してください。")
+        return 1
+
+    since = _date.fromisoformat(args.since) if args.since else None
+    until = _date.fromisoformat(args.until) if args.until else None
+    days = None if (since or until) else args.days
+
+    result = run_backtest(config, bars, days=days, since=since, until=until)
+    _print_backtest(result, config)
+    return 0
+
+
+def _print_backtest(result, config: Config) -> None:
+    """バックテストの結果を人が読める形で出す。"""
+    if not result.days:
+        print("\nその期間のデータがありませんでした。")
+        return
+
+    span = (f"{result.days[0]}" if len(result.days) == 1
+            else f"{result.days[0]} 〜 {result.days[-1]}（{len(result.days)} 営業日）")
+    print(f"\n=== {span} のペーパートレード結果 ===\n")
+
+    for symbol, series in sorted(result.bars.items()):
+        for bar in series:
+            if bar.day in result.days:
+                print(f"  {symbol} {bar.day}  寄り {bar.open:,.1f} / 高値 {bar.high:,.1f}"
+                      f" / 安値 {bar.low:,.1f} / 引け {bar.close:,.1f}")
+
+    print()
+    if result.trades:
+        print("  売買（買って売るまでを 1 件）")
+        for t in result.trades:
+            mark = "＋" if t.profit >= 0 else "−"
+            why = "損切り" if "損切り" in t.exit_reason else "売りライン"
+            print(f"    [{t.rule_id}] {t.symbol} {t.quantity}株  "
+                  f"買 {t.entry_price:,.1f} → 売 {t.exit_price:,.1f}（{why}）  "
+                  f"{mark}{abs(t.profit):,.0f} 円")
+    else:
+        print("  売買: なし（トリガーに届かなかったか、安全弁で見送りました）")
+
+    if result.open_positions:
+        print("\n  持ち越し（買ったが売れずに終わった）")
+        for t in result.open_positions:
+            print(f"    [{t.rule_id}] {t.symbol} {t.quantity}株  買 {t.entry_price:,.1f}")
+
+    blocked = [e for e in result.events if e["event"] == "BLOCKED"]
+    if blocked:
+        print("\n  安全弁で見送った発注")
+        seen: set[str] = set()
+        for event in blocked:
+            line = f"    [{event['rule_id']}] {event['note']}"
+            if line not in seen:
+                print(line)
+                seen.add(line)
+
+    print(f"\n  発注 {result.orders} 件 / 約定 {result.fills} 件")
+    print(f"  実現損益: {result.realized:+,.0f} 円（手数料・税金は含みません）")
+    if result.open_positions:
+        print("  ※ 持ち越しぶんは含みません")
+    print("\n  ※ 日足の 4 点（寄り・高値・安値・引け）でなぞった概算です。")
+    print("     高値と安値のどちらが先だったかは日足からは分からないため、")
+    print("     往復の回数は実際とずれることがあります。")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kabu", description="楽天証券 RSS 自動売買ボット")
     parser.add_argument("-c", "--config", default="config.yaml", help="設定ファイル (既定: config.yaml)")
@@ -325,6 +406,19 @@ def build_parser() -> argparse.ArgumentParser:
     play.add_argument("--poll-live", type=float, default=30.0,
                       help="--source delayed で現在値を取り直す間隔（秒・最短 10）")
     play.set_defaults(func=cmd_play, anytime=True)
+
+    back = sub.add_parser(
+        "backtest", help="過去の実データで、このルールならどうなっていたかを見る"
+    )
+    back.add_argument("--days", type=int, default=1,
+                      help="直近から何営業日ぶん回すか (既定: 1 = 直近の取引日だけ)")
+    back.add_argument("--since", help="この日から回す (YYYY-MM-DD)")
+    back.add_argument("--until", help="この日まで回す (YYYY-MM-DD)")
+    back.add_argument("--provider", choices=("stooq", "yahoo"), default="stooq",
+                      help="株価データの取得元 (既定: stooq)")
+    back.add_argument("--cache-dir", default=".kabu_cache",
+                      help="取得した株価データの保存先")
+    back.set_defaults(func=cmd_backtest)
 
     sub.add_parser("status", help="現在の状態を表示する").set_defaults(func=cmd_status)
     sub.add_parser("doctor", help="接続と設定を診断する").set_defaults(func=cmd_doctor)
