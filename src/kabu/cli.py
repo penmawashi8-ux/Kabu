@@ -201,19 +201,34 @@ def _price_source(config: Config, args: argparse.Namespace):
     if args.source == "rss":
         # 実弾と同じ経路。マーケットスピードII にログインしていれば本物の
         # リアルタイム株価が流れてくる。発注だけはシミュレーションのまま。
+        import threading
+
         from .rss import ExcelBridge
 
-        bridge = ExcelBridge(config)
-        bridge.build_quote_sheet(sorted({r.symbol for r in config.rules}))
+        # 起動時の疎通確認と QUOTES シートの用意はここ（メインスレッド）で済ませ、
+        # 繋がらなければサーバを立てる前に落とす。
+        ExcelBridge(config).build_quote_sheet(sorted({r.symbol for r in config.rules}))
 
         class _RssFeed:
             auto = True
             manual_allowed = False
 
+            def __init__(self) -> None:
+                # COM の接続はスレッドをまたいで使い回せない。売買ループは
+                # 別スレッドで回るので、実際に読むスレッドごとに繋ぎ直す。
+                self._local = threading.local()
+
+            def _bridge(self) -> ExcelBridge:
+                bridge = getattr(self._local, "bridge", None)
+                if bridge is None:
+                    bridge = ExcelBridge(config)
+                    self._local.bridge = bridge
+                return bridge
+
             def set_auto(self, flag): pass
             def set_price(self, symbol, price): pass
             def reset(self): pass
-            def read_quotes(self, symbols): return bridge.read_quotes(symbols)
+            def read_quotes(self, symbols): return self._bridge().read_quotes(symbols)
             def describe(self):
                 return {"kind": "rss", "label": "マーケットスピードII RSS（リアルタイム）",
                         "asof": None, "span": "", "progress": 0.0}
