@@ -176,6 +176,26 @@ def _price_source(config: Config, args: argparse.Namespace):
 
         return (lambda cfg: _RssFeed()), "株価: マーケットスピードII RSS のリアルタイム値"
 
+    if args.source == "delayed":
+        # 無料で取れる「いまの値段」。取引所の生値ではなく 20 分ほど遅れた配信。
+        from .marketdata import LiveFeed, MarketDataError
+
+        symbols = sorted({r.symbol for r in config.rules})
+        provider = "yahoo" if args.provider == "stooq" else args.provider
+        print(f"現在値を取得しています（{provider}）… {', '.join(symbols)}")
+        feed = LiveFeed(symbols, provider=provider, interval=args.poll_live)
+        try:
+            feed.prime()
+        except MarketDataError as exc:
+            print(f"\n現在値を取得できませんでした:\n  {exc}\n")
+            print("擬似株価に切り替えて起動します。"
+                  "（リアルタイムが必要なら --source rss を使ってください）\n")
+            return (lambda cfg: GameFeed(cfg)), "株価: 擬似（現在値の取得に失敗）"
+        feed.start()
+        got = feed.read_quotes(symbols)
+        detail = " / ".join(f"{s} {p:,.1f}" for s, p in got.items())
+        return (lambda cfg: feed), f"株価: 実際の値段（遅延・{provider}） {detail}"
+
     # args.source == "real"
     from .marketdata import MarketDataError, ReplayFeed, fetch_many
 
@@ -232,8 +252,9 @@ def build_parser() -> argparse.ArgumentParser:
     play.add_argument("--state", default="play_state.json", help="シミュレーション用の状態ファイル")
     play.add_argument("--journal", default="play_journal.csv", help="シミュレーション用の記録ファイル")
     play.add_argument(
-        "--source", choices=("sim", "real", "rss"), default="sim",
+        "--source", choices=("sim", "real", "delayed", "rss"), default="sim",
         help="株価の出どころ。sim=擬似（既定） / real=実際の日足を再生 / "
+             "delayed=実際の現在値（20 分ほど遅延・口座不要） / "
              "rss=マーケットスピードII のリアルタイム",
     )
     play.add_argument("--provider", choices=("stooq", "yahoo"), default="stooq",
@@ -242,6 +263,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="--source real の再生速度。1 秒あたり何点進むか (既定: 4)")
     play.add_argument("--cache-dir", default=".kabu_cache",
                       help="取得した株価データの保存先")
+    play.add_argument("--poll-live", type=float, default=30.0,
+                      help="--source delayed で現在値を取り直す間隔（秒・最短 10）")
     play.set_defaults(func=cmd_play, anytime=True)
 
     sub.add_parser("status", help="現在の状態を表示する").set_defaults(func=cmd_status)

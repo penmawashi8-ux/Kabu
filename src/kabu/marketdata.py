@@ -95,6 +95,51 @@ def parse_stooq_csv(text: str) -> list[Bar]:
     return sorted(bars, key=lambda b: b.day)
 
 
+def parse_yahoo_quote(payload: str) -> tuple[float, datetime | None]:
+    """Yahoo Finance の応答から「いまの値段」を取り出す。
+
+    無料で取れる日本株の値段は取引所の生値ではなく、20 分ほど遅れた配信。
+    リアルタイムが必要なら証券会社の配信（RSS）を使うこと。
+    """
+    try:
+        meta = json.loads(payload)["chart"]["result"][0]["meta"]
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+        raise MarketDataError(f"株価データの形式が想定と違います: {exc}") from exc
+
+    price = meta.get("regularMarketPrice")
+    if not isinstance(price, (int, float)) or isinstance(price, bool) or price <= 0:
+        raise MarketDataError("現在値が取得できませんでした")
+
+    stamp = meta.get("regularMarketTime")
+    asof = datetime.fromtimestamp(stamp) if isinstance(stamp, (int, float)) else None
+    return float(price), asof
+
+
+def parse_stooq_quote(text: str) -> tuple[float, datetime | None]:
+    """stooq の 1 行 CSV から「いまの値段」を取り出す。
+
+    Symbol,Date,Time,Open,High,Low,Close,Volume
+    7203.JP,2026-08-31,15:00:00,2600,2650,2590,2640,12345600
+    """
+    rows = list(csv.DictReader(io.StringIO(text.strip())))
+    if not rows:
+        raise MarketDataError("株価データが空でした")
+    row = rows[0]
+    try:
+        price = float(row["Close"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise MarketDataError(f"現在値が取得できませんでした: {row}") from exc
+    if price <= 0:
+        raise MarketDataError("現在値が 0 以下でした")
+
+    asof = None
+    try:
+        asof = datetime.strptime(f"{row['Date']} {row['Time']}", "%Y-%m-%d %H:%M:%S")
+    except (KeyError, TypeError, ValueError):
+        pass
+    return price, asof
+
+
 def parse_yahoo_json(payload: str) -> list[Bar]:
     """Yahoo Finance のチャート API の応答を読む。"""
     try:
@@ -140,10 +185,35 @@ def _yahoo_url(symbol: str) -> str:
     )
 
 
+def _stooq_quote_url(symbol: str) -> str:
+    code = symbol.split(".")[0].lower()
+    return f"https://stooq.com/q/l/?s={code}.jp&f=sd2t2ohlcv&h&e=csv"
+
+
+def _yahoo_quote_url(symbol: str) -> str:
+    code = symbol if "." in symbol else f"{symbol}.T"
+    return f"https://query1.finance.yahoo.com/v8/finance/chart/{code}?range=1d&interval=1m"
+
+
 PROVIDERS = {
     "stooq": (_stooq_url, parse_stooq_csv),
     "yahoo": (_yahoo_url, parse_yahoo_json),
 }
+
+QUOTE_PROVIDERS = {
+    "stooq": (_stooq_quote_url, parse_stooq_quote),
+    "yahoo": (_yahoo_quote_url, parse_yahoo_quote),
+}
+
+
+def fetch_quote(symbol: str, *, provider: str = "yahoo") -> tuple[float, datetime | None]:
+    """1 銘柄の「いまの値段」を 1 回取る（遅延あり）。"""
+    if provider not in QUOTE_PROVIDERS:
+        raise MarketDataError(
+            f"知らない取得元です: {provider}（使えるのは {', '.join(QUOTE_PROVIDERS)}）"
+        )
+    url_of, parse = QUOTE_PROVIDERS[provider]
+    return parse(_download(url_of(symbol)))
 
 
 def _download(url: str) -> str:
@@ -286,4 +356,119 @@ class ReplayFeed:
                 "span": span,
                 "progress": (cursor / self._length) if self._length else 0.0,
                 "speed": self._speed,
+            }
+
+
+class LiveFeed:
+    """遅延ありの「いまの値段」を定期的に取り直して流す。
+
+    無料の配信は取引所の生値ではなく 20 分ほど遅れたもの。値段そのものは本物だが、
+    リアルタイムではない。それを画面でも隠さない（describe() が delayed を返す）。
+
+    ほんとうのリアルタイムが要るなら証券会社の配信を使うこと:
+        kabu play --source rss   （マーケットスピードII）
+    """
+
+    def __init__(
+        self,
+        symbols: list[str],
+        *,
+        provider: str = "yahoo",
+        interval: float = 30.0,
+        auto: bool = False,
+    ) -> None:
+        self._lock = threading.Lock()
+        self._symbols = list(symbols)
+        self._provider = provider
+        # 取得元に迷惑をかけないよう、あまり短い間隔は許さない。
+        self._interval = max(10.0, float(interval))
+        self._playing = bool(auto)
+        self._prices: dict[str, float] = {}
+        self._asof: datetime | None = None
+        self._last_error: str = ""
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    # ---- 起動と停止 ----------------------------------------------------
+
+    def prime(self) -> None:
+        """最初の 1 回を同期で取る。ここで失敗したら呼び出し側が諦められる。"""
+        self._poll_once()
+        if not self._prices:
+            raise MarketDataError(self._last_error or "現在値を取得できませんでした")
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._loop, name="kabu-live", daemon=True)
+        self._thread.start()
+
+    def close(self) -> None:
+        self._stop.set()
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self._interval):
+            if self.auto:
+                self._poll_once()
+
+    def _poll_once(self) -> None:
+        prices: dict[str, float] = {}
+        asof: datetime | None = None
+        errors: list[str] = []
+        for symbol in self._symbols:
+            try:
+                price, stamp = fetch_quote(symbol, provider=self._provider)
+                prices[symbol] = price
+                asof = stamp or asof
+            except MarketDataError as exc:
+                errors.append(f"{symbol}: {exc}")
+
+        with self._lock:
+            # 取れた銘柄だけ差し替える。取れなかった銘柄は直前の値段のまま。
+            self._prices.update(prices)
+            if asof:
+                self._asof = asof
+            self._last_error = "; ".join(errors)
+        for message in errors:
+            log.warning("現在値を取得できませんでした — %s", message)
+
+    # ---- GameFeed と同じ操作面 ------------------------------------------
+
+    @property
+    def auto(self) -> bool:
+        with self._lock:
+            return self._playing
+
+    def set_auto(self, flag: bool) -> None:
+        should_poll = bool(flag)
+        with self._lock:
+            was = self._playing
+            self._playing = should_poll
+        if should_poll and not was:
+            self._poll_once()   # 押した直後に反映されてほしい
+
+    def set_price(self, symbol: str, price: float) -> None:
+        """実際の値段を流している最中は手で動かせない。"""
+
+    def reset(self) -> None:
+        self._poll_once()
+
+    def read_quotes(self, symbols: list[str]) -> dict[str, float]:
+        with self._lock:
+            return {s: self._prices[s] for s in symbols if s in self._prices}
+
+    # ---- 表示用 ---------------------------------------------------------
+
+    @property
+    def manual_allowed(self) -> bool:
+        return False
+
+    def describe(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "kind": "delayed",
+                "label": "実際の株価（遅延）",
+                "asof": self._asof.strftime("%H:%M") if self._asof else None,
+                "span": f"{self._provider} · {self._interval:.0f} 秒ごとに取得"
+                        + (f" · {self._last_error}" if self._last_error else ""),
+                "progress": 0.0,
+                "speed": 1,
             }

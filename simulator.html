@@ -156,8 +156,9 @@
   .badge[data-live="demo"] .dot   { background: var(--accent); }
   /* 株価が本物かどうかは一目で分かる必要がある */
   .badge[data-source="sim"]    .dot { background: var(--ink-muted); }
-  .badge[data-source="replay"] .dot { background: var(--sell); }
-  .badge[data-source="rss"]    .dot { background: var(--good); }
+  .badge[data-source="replay"]  .dot { background: var(--sell); }
+  .badge[data-source="delayed"] .dot { background: var(--sell); }
+  .badge[data-source="rss"]     .dot { background: var(--good); }
 
   .safe-note {
     /* flex で並べると「お金は動きません。」が途中で折れるので通常の文章として流す */
@@ -1164,14 +1165,22 @@
     srcBadge.dataset.source = src.kind;
     document.getElementById("source-text").textContent =
       src.label + (src.asof ? ` ${src.asof}` : "");
+    // 遅延配信は「本物の値段だが今の値段ではない」ので、そこを取り違えさせない
+    srcBadge.title = src.kind === "delayed"
+      ? `取引所から約 20 分遅れの配信 · ${src.span}`
+      : src.span ? `データ期間 ${src.span}` : "";
     srcBadge.title = src.span ? `データ期間 ${src.span}` : "";
     sourceKind = src.kind;
     paintBaseHelp();
-    document.getElementById("safe-text").textContent = src.kind === "sim"
-      ? "株価も注文も損益も、すべて作り物です。証券会社には接続していません。"
-      : src.kind === "replay"
-        ? `株価は実際の値段です（${src.span} の日足）。注文と損益はシミュレーションで、証券会社には送っていません。`
-        : "株価はマーケットスピードII のリアルタイム値です。注文と損益はシミュレーションで、証券会社には送っていません。";
+    const safeText = {
+      sim: "株価も注文も損益も、すべて作り物です。証券会社には接続していません。",
+      replay: `株価は実際の値段です（${src.span} の日足）。注文と損益はシミュレーションで、証券会社には送っていません。`,
+      delayed: "株価は実際の値段ですが、取引所から 20 分ほど遅れた配信です。" +
+               "注文と損益はシミュレーションで、証券会社には送っていません。",
+      rss: "株価はマーケットスピードII のリアルタイム値です。" +
+           "注文と損益はシミュレーションで、証券会社には送っていません。",
+    };
+    document.getElementById("safe-text").textContent = safeText[src.kind] || safeText.sim;
 
     // 実データ再生・RSS では株価を手で動かせない
     manualAllowed = snap.manual !== false;

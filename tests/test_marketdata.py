@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -171,3 +171,135 @@ def test_replay_reset_returns_to_the_start():
 def test_replay_handles_a_symbol_with_no_data():
     feed = ReplayFeed({"7203.T": bars(2600)}, speed=1)
     assert feed.read_quotes(["6758.T"]) == {}
+
+
+# --------------------------------------------------- 現在値（遅延あり）の取得
+
+YAHOO_QUOTE = json.dumps({
+    "chart": {"result": [{
+        "meta": {"symbol": "7203.T", "currency": "JPY",
+                 "regularMarketPrice": 2934.5, "regularMarketTime": 1788150000},
+    }], "error": None}
+})
+
+STOOQ_QUOTE = (
+    "Symbol,Date,Time,Open,High,Low,Close,Volume\n"
+    "7203.JP,2026-08-31,15:00:00,2900,2960,2880,2934.5,12345600\n"
+)
+
+
+def test_parses_yahoo_current_price():
+    from kabu.marketdata import parse_yahoo_quote
+
+    price, asof = parse_yahoo_quote(YAHOO_QUOTE)
+    assert price == 2934.5
+    assert asof is not None
+
+
+def test_yahoo_quote_without_a_price_is_an_error():
+    from kabu.marketdata import parse_yahoo_quote
+
+    payload = json.dumps({"chart": {"result": [{"meta": {"symbol": "9999.T"}}]}})
+    with pytest.raises(MarketDataError, match="現在値"):
+        parse_yahoo_quote(payload)
+
+
+def test_parses_stooq_current_price():
+    from kabu.marketdata import parse_stooq_quote
+
+    price, asof = parse_stooq_quote(STOOQ_QUOTE)
+    assert price == 2934.5
+    assert asof == datetime(2026, 8, 31, 15, 0, 0)
+
+
+def test_stooq_quote_with_no_data_is_an_error():
+    from kabu.marketdata import parse_stooq_quote
+
+    text = "Symbol,Date,Time,Open,High,Low,Close,Volume\n7203.JP,N/D,N/D,N/D,N/D,N/D,N/D,N/D\n"
+    with pytest.raises(MarketDataError):
+        parse_stooq_quote(text)
+
+
+class FakeQuotes:
+    """fetch_quote を差し替えて、取得の成否を手で決められるようにする。"""
+
+    def __init__(self, prices: dict[str, float]) -> None:
+        self.prices = prices
+        self.calls = 0
+        self.fail: set[str] = set()
+
+    def __call__(self, symbol, *, provider="yahoo"):
+        self.calls += 1
+        if symbol in self.fail:
+            raise MarketDataError("取得できません")
+        return self.prices[symbol], datetime(2026, 8, 31, 14, 45)
+
+
+def live_feed(monkeypatch, prices, **kwargs):
+    from kabu import marketdata
+
+    fake = FakeQuotes(prices)
+    monkeypatch.setattr(marketdata, "fetch_quote", fake)
+    feed = marketdata.LiveFeed(list(prices), **kwargs)
+    return feed, fake
+
+
+def test_live_feed_serves_the_fetched_price(monkeypatch):
+    feed, _ = live_feed(monkeypatch, {"7203.T": 2934.5})
+    feed.prime()
+    assert feed.read_quotes(["7203.T"]) == {"7203.T": 2934.5}
+    assert feed.manual_allowed is False
+
+
+def test_live_feed_reports_itself_as_delayed(monkeypatch):
+    feed, _ = live_feed(monkeypatch, {"7203.T": 2934.5})
+    feed.prime()
+    info = feed.describe()
+    assert info["kind"] == "delayed"
+    assert "遅延" in info["label"]
+    assert info["asof"] == "14:45"
+
+
+def test_live_feed_cannot_be_moved_by_hand(monkeypatch):
+    feed, _ = live_feed(monkeypatch, {"7203.T": 2934.5})
+    feed.prime()
+    feed.set_price("7203.T", 1)
+    assert feed.read_quotes(["7203.T"]) == {"7203.T": 2934.5}
+
+
+def test_live_feed_prime_fails_loudly_when_nothing_can_be_fetched(monkeypatch):
+    feed, fake = live_feed(monkeypatch, {"7203.T": 2934.5})
+    fake.fail = {"7203.T"}
+    with pytest.raises(MarketDataError):
+        feed.prime()
+
+
+def test_live_feed_keeps_the_last_price_when_a_refresh_fails(monkeypatch):
+    """一時的に取得できなくても、直前の値段を保って動き続ける。"""
+    feed, fake = live_feed(monkeypatch, {"7203.T": 2934.5})
+    feed.prime()
+    fake.fail = {"7203.T"}
+    feed.set_auto(True)                       # 押した瞬間に取り直す → 失敗する
+    assert feed.read_quotes(["7203.T"]) == {"7203.T": 2934.5}
+    assert "取得できません" in feed.describe()["span"]
+
+
+def test_live_feed_refuses_a_hammering_interval(monkeypatch):
+    feed, _ = live_feed(monkeypatch, {"7203.T": 2934.5}, interval=0.1)
+    assert feed._interval >= 10      # 取得元に連打をかけない
+
+
+def test_live_feed_starts_paused(monkeypatch):
+    feed, _ = live_feed(monkeypatch, {"7203.T": 2934.5})
+    assert feed.auto is False
+
+
+def test_live_feed_updates_only_the_symbols_it_could_fetch(monkeypatch):
+    feed, fake = live_feed(monkeypatch, {"7203.T": 2934.5, "6758.T": 3400.0})
+    feed.prime()
+    fake.prices["7203.T"] = 3000.0
+    fake.fail = {"6758.T"}
+    feed.set_auto(True)
+    quotes = feed.read_quotes(["7203.T", "6758.T"])
+    assert quotes["7203.T"] == 3000.0     # 取れたほうは更新される
+    assert quotes["6758.T"] == 3400.0     # 取れなかったほうは据え置き
