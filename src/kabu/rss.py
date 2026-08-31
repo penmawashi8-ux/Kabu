@@ -50,10 +50,31 @@ class ExcelBridge:
         self._xw = _import_xlwings()
         self._book = self._open_book()
 
+    def _open_books(self) -> list[Any]:
+        """今 開かれているブックを全部集める。
+
+        Excel が 1 つも起動していなければ空リスト（xlwings は
+        「Couldn't find any active App!」で落ちるので、ここで吸収する）。
+        アクティブでない Excel のブックも見るのは、既に開いてあるブックを
+        二重に開かないため。
+        """
+        xw = self._xw
+        try:
+            apps = list(xw.apps)
+        except Exception:  # pragma: no cover - Excel 未起動などはここに来る
+            return []
+        books: list[Any] = []
+        for app in apps:
+            try:
+                books.extend(list(app.books))
+            except Exception:  # pragma: no cover - 終了しかけの Excel は飛ばす
+                continue
+        return books
+
     def _open_book(self) -> Any:
         xw = self._xw
         path = os.path.abspath(self._config.excel.workbook)
-        for book in xw.books:
+        for book in self._open_books():
             try:
                 if os.path.abspath(book.fullname) == path:
                     return book
@@ -64,7 +85,11 @@ class ExcelBridge:
                 f"ワークブックが見つかりません: {path}\n"
                 "`kabu init-sheet` で雛形を作るか、excel.workbook のパスを見直してください。"
             )
-        app = xw.App(visible=self._config.excel.visible, add_book=False) if not xw.apps else xw.apps.active
+        try:
+            running = bool(list(xw.apps))
+        except Exception:  # pragma: no cover - 数えられないなら起動していない扱い
+            running = False
+        app = xw.apps.active if running else xw.App(visible=self._config.excel.visible, add_book=False)
         return app.books.open(path)
 
     def _sheet(self, name: str) -> Any:
