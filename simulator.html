@@ -399,6 +399,11 @@
     font-weight: 600;
     flex: 1 1 240px;
   }
+  .save-note {
+    color: var(--ink-muted);
+    font-size: 12px;
+    flex: 1 1 240px;
+  }
   .board-controls .spacer { flex: 1 1 auto; }
 
   /* -------------------------------------------------------------- tooltip */
@@ -605,7 +610,11 @@
       <button type="button" id="f-submit">この銘柄を追加</button>
       <button type="button" id="f-recommend" class="ghost">推奨値に戻す</button>
       <button type="button" id="f-cancel" class="ghost" hidden>編集をやめる</button>
+      <label class="check" id="f-save-wrap" hidden>
+        <input type="checkbox" id="f-save" checked> <span id="f-save-label">config.yaml にも保存する</span>
+      </label>
       <span class="editor-error" id="f-error" hidden role="alert"></span>
+      <span class="save-note" id="f-save-status" hidden></span>
     </div>
   </section>
 
@@ -880,12 +889,13 @@
     setPrice(symbol, value) { return this.post("price", { symbol, price: value }); }
     setAuto(flag) { return this.post("auto", { auto: flag }); }
     reset() { return this.post("reset", {}); }
-    async setRules(rules) {
-      const res = await this.post("rules", { rules });
+    async setRules(rules, save) {
+      const res = await this.post("rules", { rules, save: !!save });
+      const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
         throw new Error(body.error || "ルールを適用できませんでした");
       }
+      return body; // { ok, saved, save_error?, path? }
     }
     snapshot() { return this.last; }
   }
@@ -1268,6 +1278,8 @@
   const fBuy = F("f-buy"), fSell = F("f-sell"), fStop = F("f-stop");
   const fStopOn = F("f-stop-on"), fCycles = F("f-cycles"), fError = F("f-error");
   const fSubmit = F("f-submit"), fCancel = F("f-cancel");
+  const fSaveWrap = F("f-save-wrap"), fSave = F("f-save"), fSaveLabel = F("f-save-label");
+  const fSaveStatus = F("f-save-status");
   let widthKey = "normal";
 
   // 銘柄プルダウン
@@ -1407,10 +1419,20 @@
     return `${code}-${n}`;
   }
 
-  async function applyRules(rules, { keepForm = false } = {}) {
+  function showSaveStatus(result) {
+    if (!fSaveStatus) return;
+    if (!result || result.saved == null) { fSaveStatus.hidden = true; return; }
+    fSaveStatus.hidden = false;
+    fSaveStatus.textContent = result.saved
+      ? `${result.path} に保存しました`
+      : `保存に失敗しました: ${result.save_error || "不明なエラー"}`;
+  }
+
+  async function applyRules(rules, { keepForm = false, save = false } = {}) {
     try {
-      await engine.setRules(rules);
+      const result = await engine.setRules(rules, save);
       showError("");
+      showSaveStatus(save ? result : null);
       if (!keepForm) endEditing();
       if (engine.kind === "demo") render(engine.snapshot());
     } catch (err) {
@@ -1436,7 +1458,7 @@
       showError("銘柄は 12 件までにしてください");
       return;
     }
-    applyRules([...others, toPayload(draft)]);
+    applyRules([...others, toPayload(draft)], { save: fSave ? fSave.checked : false });
   });
 
   function editRule(ruleId) {
@@ -1459,6 +1481,7 @@
     fSubmit.textContent = "この内容に更新する";
     fCancel.hidden = false;
     showError("");
+    showSaveStatus(null);
     paintSymbolSub();
     paintTriggerHints();
     F("editor").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1480,7 +1503,7 @@
       return;
     }
     if (editingId === ruleId) endEditing();
-    applyRules(rest);
+    applyRules(rest, { save: fSave ? fSave.checked : false });
   }
 
   // ------------------------------------------------------------------ 起動
@@ -1511,6 +1534,10 @@
       await remote.refresh();
       engine = remote;
       setAutoUI(remote.last.auto);
+      if (remote.last.config_path) {
+        fSaveWrap.hidden = false;
+        fSaveLabel.textContent = `${remote.last.config_path} にも保存する`;
+      }
       render(remote.last);
       autoBtn.addEventListener("click", async () => {
         const next = autoBtn.getAttribute("aria-pressed") !== "true";

@@ -21,7 +21,7 @@ from typing import Any
 
 from .broker import PaperBroker
 from .clock import MarketClock
-from .config import Config, Rule
+from .config import Config, Rule, save_rules
 from .errors import ConfigError
 from .journal import Journal
 from .runner import Runner
@@ -151,8 +151,11 @@ class UiJournal(Journal):
 class GameSession:
     """Runner をバックグラウンドで回し、UI 用のスナップショットを作る。"""
 
-    def __init__(self, config: Config, feed_factory=None) -> None:
+    def __init__(self, config: Config, feed_factory=None, config_path: Path | None = None) -> None:
         self.config = config
+        # 画面の「保存」がどのファイルに書き戻すか。None なら保存ボタンは出さない
+        # （`kabu play` は必ず -c で読んだファイルのパスを渡してくる）。
+        self.config_path = config_path
         # 株価をどこから取るか。既定は擬似株価、実データ再生や RSS も差せる。
         self._feed_factory = feed_factory or (lambda cfg: GameFeed(cfg))
         self._lock = threading.Lock()
@@ -282,6 +285,18 @@ class GameSession:
             self._clear_locked()
             self._rebuild()
 
+    def save_to_file(self) -> None:
+        """今の画面のルールを config.yaml（`-c` で指定したファイル）に書き戻す。
+
+        rules: 以外のキーやコメントには触れない（config.save_rules 参照）。
+        `-c` を指定していない/ファイルが無い場合は ConfigError で弾く。
+        """
+        if self.config_path is None:
+            raise ConfigError("保存先の設定ファイルが分かりません（kabu play を -c 付きで起動してください）")
+        with self._lock:
+            rules = self.config.rules
+        save_rules(self.config_path, rules)
+
     # ------------------------------------------------------------- スナップ
 
     def snapshot(self) -> dict[str, Any]:
@@ -309,6 +324,7 @@ class GameSession:
             return {
                 "kind": "engine",
                 "now": self.runner.clock.now().isoformat(),
+                "config_path": str(self.config_path) if self.config_path else None,
                 "auto": self.feed.auto,
                 "source": self.feed.describe(),
                 "manual": getattr(self.feed, "manual_allowed", True),
@@ -384,7 +400,18 @@ class _Handler(BaseHTTPRequestHandler):
                 # 設定ファイルと同じ検証なので、そのまま画面に出せば意味が通る。
                 self._json({"ok": False, "error": str(exc)}, 400)
                 return
-            self._json({"ok": True})
+
+            if not payload.get("save"):
+                self._json({"ok": True, "saved": False})
+                return
+            try:
+                self.session.save_to_file()
+            except (ConfigError, OSError) as exc:
+                # ルールの適用（画面上の反映）は既に成功しているので、ここで失敗しても
+                # ok は真のまま。「保存だけ」失敗したことを別に伝える。
+                self._json({"ok": True, "saved": False, "save_error": str(exc)})
+                return
+            self._json({"ok": True, "saved": True, "path": str(self.session.config_path)})
         else:
             self._json({"error": "not found"}, 404)
 
@@ -403,8 +430,8 @@ def _lan_address() -> str | None:
 
 
 def serve(config: Config, host: str = "127.0.0.1", port: int = 8765,
-          feed_factory=None, banner: str = "") -> None:
-    session = GameSession(config, feed_factory)
+          feed_factory=None, banner: str = "", config_path: Path | None = None) -> None:
+    session = GameSession(config, feed_factory, config_path=config_path)
     session.start()
 
     handler = type("Handler", (_Handler,), {"session": session, "page": _load_page()})

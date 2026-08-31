@@ -184,7 +184,10 @@ def cmd_play(args: argparse.Namespace) -> int:
         journal_file=args.journal,
     )
     factory, banner = _price_source(config, args)
-    serve(config, host=args.host, port=args.port, feed_factory=factory, banner=banner)
+    serve(
+        config, host=args.host, port=args.port, feed_factory=factory, banner=banner,
+        config_path=Path(args.config),
+    )
     return 0
 
 

@@ -9,6 +9,7 @@ description = "楽天証券 マーケットスピードII RSS を使った価格
 requires-python = ">=3.11"
 dependencies = [
     "PyYAML>=6.0",
+    "ruamel.yaml>=0.18",
 ]
 
 [project.optional-dependencies]
