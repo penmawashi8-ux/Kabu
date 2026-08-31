@@ -62,6 +62,28 @@ class Candidate:
     def label(self) -> str:
         return f"買 {self.buy_pct:+.1f}% / 売 {self.sell_pct:+.1f}% / 損切 {self.stop_pct:+.1f}%"
 
+    @property
+    def gain_pct(self) -> float:
+        """1 往復で取りにいく値幅（買えた値段に対する %）。"""
+        entry = 1 + self.buy_pct / 100
+        return ((1 + self.sell_pct / 100) / entry - 1) * 100
+
+    @property
+    def loss_pct(self) -> float:
+        """損切りまでの値幅（買えた値段に対する %。負の数）。"""
+        entry = 1 + self.buy_pct / 100
+        return ((1 + self.stop_pct / 100) / entry - 1) * 100
+
+    @property
+    def breakeven_win_rate(self) -> float:
+        """この値幅で±ゼロになる勝率（%）。
+
+        1 回の利益より 1 回の損失が大きければ、勝率が高くないと合わない。
+        「小さく勝って大きく負ける」設定を見分けるために出す。
+        """
+        risk = abs(self.loss_pct)
+        return risk / (risk + self.gain_pct) * 100 if (risk + self.gain_pct) else 0.0
+
 
 @dataclass
 class Score:
