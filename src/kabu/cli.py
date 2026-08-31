@@ -117,6 +117,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"停止ファイル      : {config.risk.kill_switch_file} "
           f"({'存在します（起動しません）' if Path(config.risk.kill_switch_file).exists() else '無し'})")
 
+    # 株価取得と発注は別物なので、別々に判定する。株価だけ使いたい場合
+    # （--source rss でシミュレーションするだけ）に、注文シートが未整備でも
+    # 「NG」と出て混乱しないようにする。
     symbols = sorted({r.symbol for r in config.rules})
     try:
         from .rss import ExcelBridge
@@ -124,15 +127,24 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         bridge = ExcelBridge(config)
         bridge.build_quote_sheet(symbols)
         quotes = bridge.read_quotes(symbols)
-        print("Excel / RSS 接続  : OK")
-        for symbol in symbols:
-            price = quotes.get(symbol)
-            print(f"  {symbol:>10} : {price if price is not None else '取得できず'}")
-        orders = bridge.read_order_table()
-        print(f"注文一覧シート    : {len(orders)} 行読めました")
     except KabuError as exc:
-        print(f"Excel / RSS 接続  : NG — {exc}")
+        print(f"株価の取得        : NG — {exc}")
         return 1 if config.is_live else 0
+
+    print("株価の取得        : OK（リアルタイム）")
+    for symbol in symbols:
+        price = quotes.get(symbol)
+        print(f"  {symbol:>10} : {price if price is not None else '取得できず'}")
+
+    try:
+        orders = bridge.read_order_table()
+        print(f"注文一覧シート    : OK（{len(orders)} 行）")
+    except KabuError as exc:
+        print(f"注文一覧シート    : 未整備 — {exc}")
+        if config.is_live:
+            print("  実弾モードには注文一覧シートが必要です（README の「Excel ブックの用意」）。")
+            return 1
+        print("  株価を見るだけなら、このままで問題ありません。")
     return 0
 
 
