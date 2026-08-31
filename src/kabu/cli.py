@@ -6,6 +6,7 @@
     kabu run         売買ループを開始する
     kabu backtest    過去の実データでルールを検証する（発注しない）
     kabu optimize    過去データから良かった値幅設定を総当たりで探す
+    kabu compare     売買手法そのもの（トレンド追随・逆張り等）を比べる
 """
 
 from __future__ import annotations
@@ -503,6 +504,82 @@ def _print_optimize(reports, *, holdout: int, segment: int) -> None:
     print("  * 過去にうまくいった設定が、これから儲かる保証はありません。")
 
 
+def _shown_width(text: str) -> int:
+    """画面に出したときの桁数（全角は 2 桁）。"""
+    import unicodedata
+
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
+
+
+def _pad(text: str, width: int) -> str:
+    """表示幅で左寄せ。
+
+    Python の f"{s:<30}" は文字数で数えるため、日本語混じりの表は桁がずれる。
+    """
+    return text + " " * max(0, width - _shown_width(text))
+
+
+def _rpad(text: str, width: int) -> str:
+    """表示幅で右寄せ（見出しを数字の桁に合わせる）。"""
+    return " " * max(0, width - _shown_width(text)) + text
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    """売買手法そのものを並べて比べる（値幅の調整ではなく、やり方の比較）。"""
+    from .research import compare
+
+    config = load_config(args.config)
+    setup_logging(config.log_file, verbose=args.verbose, timezone=config.market.timezone)
+    quiet_analysis(args.verbose)
+
+    symbols = ([s.strip() for s in args.symbols.split(",") if s.strip()]
+               if args.symbols else sorted({r.symbol for r in config.rules}))
+    bars = _fetch_with_fallback(symbols, args)
+    if bars is None:
+        return 1
+
+    totals: dict[str, list[float]] = {}
+    for symbol in sorted(bars):
+        series = bars[symbol][-args.days:] if args.days else bars[symbol]
+        if len(series) < 220:
+            print(f"\n■ {symbol} — データが足りません（{len(series)} 日）")
+            continue
+
+        outcomes = compare(series)
+        span = f"{series[0].day} 〜 {series[-1].day}（{len(series)} 営業日）"
+        print(f"\n{'=' * 78}")
+        print(f"■ {symbol}   {span}")
+        print(f"{'-' * 78}")
+        print(_pad("手法", 40) + _rpad("損益", 7) + _rpad("売買", 7)
+              + _rpad("勝率", 7) + _rpad("最大下落", 9) + _rpad("保有", 6))
+        for outcome in outcomes:
+            totals.setdefault(outcome.name, []).append(outcome.return_pct)
+            print(f"{_pad(outcome.name, 40)}"
+                  f"{outcome.return_pct:>+6.1f}%{outcome.trades:>5}回"
+                  f"{outcome.win_rate:>6.0f}%{outcome.max_drawdown_pct:>8.1f}%"
+                  f"{outcome.exposure_pct:>5.0f}%")
+
+    if len(totals.get("持ちっぱなし", [])) > 1:
+        print(f"\n{'=' * 78}")
+        print(f"■ 全銘柄の平均")
+        print(f"{'-' * 78}")
+        for name, values in totals.items():
+            average = sum(values) / len(values)
+            print(f"{_pad(name, 40)}{average:>+6.1f}%")
+
+    print(f"\n{'=' * 78}")
+    print("読み方")
+    print(f"{'-' * 78}")
+    print("  * 判断は当日の終値まで、約定は翌日の寄り付き。未来を覗いていません。")
+    print("  * 各手法のパラメータは教科書的な既定値で固定しています。この期間に")
+    print("    合わせて調整はしていません（調整すると必ず良く見えてしまうため）。")
+    print("  * 「最大下落」= 評価額の山からの最大下落率。どれだけ含み損に耐える")
+    print("    必要があったか。損益が同じなら、この数字が小さいほうが良い手法です。")
+    print("  * 「保有」= 期間のうち株を持っていた日の割合。低いほど資金を遊ばせています。")
+    print("  * 税金（利益の約 20.315%）と滑りは含んでいません。売買回数が多い手法ほど不利です。")
+    print("  * 持ちっぱなしに勝てない手法は、手間とリスクを増やしているだけです。")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kabu", description="楽天証券 RSS 自動売買ボット")
     parser.add_argument("-c", "--config", default="config.yaml", help="設定ファイル (既定: config.yaml)")
@@ -567,6 +644,15 @@ def build_parser() -> argparse.ArgumentParser:
                      help="株価データの取得元 (既定: yahoo)")
     opt.add_argument("--cache-dir", default=".kabu_cache", help="取得したデータの保存先")
     opt.set_defaults(func=cmd_optimize)
+
+    cmp_ = sub.add_parser("compare", help="売買手法そのものを並べて比べる")
+    cmp_.add_argument("--symbols", help="対象銘柄をカンマ区切りで（既定: config.yaml のルール）")
+    cmp_.add_argument("--days", type=int, default=0,
+                      help="直近何営業日ぶんで比べるか (既定: 0 = 取得できた全期間)")
+    cmp_.add_argument("--provider", choices=("stooq", "yahoo"), default="yahoo",
+                      help="株価データの取得元 (既定: yahoo)")
+    cmp_.add_argument("--cache-dir", default=".kabu_cache", help="取得したデータの保存先")
+    cmp_.set_defaults(func=cmd_compare)
 
     sub.add_parser("status", help="現在の状態を表示する").set_defaults(func=cmd_status)
     sub.add_parser("doctor", help="接続と設定を診断する").set_defaults(func=cmd_doctor)
