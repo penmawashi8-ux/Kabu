@@ -21,6 +21,7 @@ from typing import Any
 
 from .broker import PaperBroker
 from .clock import MarketClock
+from .comthread import init_com, release_com
 from .config import Config, Rule, save_rules
 from .errors import ConfigError
 from .journal import Journal
@@ -203,12 +204,19 @@ class GameSession:
         self._stop.set()
 
     def _loop(self) -> None:
-        while not self._stop.is_set():
-            try:
-                self._step()
-            except Exception:
-                log.exception("シミュレーションの周回でエラーが発生しました")
-            self._stop.wait(self.config.poll_interval_sec)
+        # Excel(RSS) を株価に使う場合、この売買ループは別スレッドで回るため
+        # スレッドごとに COM の初期化が要る。呼ばないと Excel を触った瞬間に
+        # 「CoInitialize は呼び出されていません」で毎周回落ちる。
+        com = init_com()
+        try:
+            while not self._stop.is_set():
+                try:
+                    self._step()
+                except Exception:
+                    log.exception("シミュレーションの周回でエラーが発生しました")
+                self._stop.wait(self.config.poll_interval_sec)
+        finally:
+            release_com(com)
 
     def _step(self) -> None:
         with self._lock:

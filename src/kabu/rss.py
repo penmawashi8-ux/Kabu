@@ -71,7 +71,18 @@ class ExcelBridge:
         try:
             return self._book.sheets[name]
         except Exception as exc:
-            raise BrokerError(f"シート '{name}' がワークブックにありません") from exc
+            # Excel との通信そのものが失敗しているのを「シートが無い」と
+            # 誤診しない。シート名を一覧できたときだけ不在と判断する。
+            try:
+                names = [s.name for s in self._book.sheets]
+            except Exception as probe_exc:
+                raise BrokerError(
+                    f"Excel に問い合わせできませんでした: {probe_exc}\n"
+                    "Excel やブックが閉じられていないか確認してください。"
+                ) from probe_exc
+            raise BrokerError(
+                f"シート '{name}' がワークブックにありません（あるのは {', '.join(names) or 'なし'}）"
+            ) from exc
 
     @staticmethod
     def _existing_symbols(sheet: Any, count: int) -> list[str]:
