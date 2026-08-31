@@ -5,6 +5,7 @@
     kabu status      現在の状態を表示する
     kabu run         売買ループを開始する
     kabu backtest    過去の実データでルールを検証する（発注しない）
+    kabu optimize    過去データから良かった値幅設定を総当たりで探す
 """
 
 from __future__ import annotations
@@ -290,32 +291,36 @@ def cmd_init_sheet(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fetch_with_fallback(symbols: list[str], args: argparse.Namespace):
+    """実データを取ってくる。片方の取得元が制限をかけていたらもう片方を試す。"""
+    from .marketdata import MarketDataError, fetch_many
+
+    order = [args.provider] + [p for p in ("yahoo", "stooq") if p != args.provider]
+    for i, provider in enumerate(order):
+        print(f"実データを取得しています（{provider}）… {', '.join(symbols)}")
+        try:
+            return fetch_many(symbols, provider=provider, cache_dir=args.cache_dir)
+        except MarketDataError as exc:
+            print(f"\n{provider} からは取得できませんでした:\n  {exc}\n")
+            if i + 1 < len(order):
+                print(f"{order[i + 1]} で取り直します。\n")
+    print("どの取得元からも実データを取得できませんでした。"
+          "ネットワーク（社内プロキシなど）を確認してください。")
+    return None
+
+
 def cmd_backtest(args: argparse.Namespace) -> int:
     """過去の実データで「このルールならどうなっていたか」を確かめる（発注しない）。"""
     from datetime import date as _date
 
     from .backtest import run_backtest
-    from .marketdata import MarketDataError, fetch_many
 
     config = load_config(args.config)
     setup_logging(config.log_file, verbose=args.verbose, timezone=config.market.timezone)
 
     symbols = sorted({r.symbol for r in config.rules})
-    # 片方の取得元が制限をかけていることがあるので、駄目ならもう片方を試す。
-    order = [args.provider] + [p for p in ("yahoo", "stooq") if p != args.provider]
-    bars = None
-    for i, provider in enumerate(order):
-        print(f"実データを取得しています（{provider}）… {', '.join(symbols)}")
-        try:
-            bars = fetch_many(symbols, provider=provider, cache_dir=args.cache_dir)
-            break
-        except MarketDataError as exc:
-            print(f"\n{provider} からは取得できませんでした:\n  {exc}\n")
-            if i + 1 < len(order):
-                print(f"{order[i + 1]} で取り直します。\n")
+    bars = _fetch_with_fallback(symbols, args)
     if bars is None:
-        print("どの取得元からも実データを取得できませんでした。"
-              "ネットワーク（社内プロキシなど）を確認してください。")
         return 1
 
     since = _date.fromisoformat(args.since) if args.since else None
@@ -410,6 +415,83 @@ def _print_untriggered(result, config: Config) -> None:
         print("\n".join(lines))
 
 
+def cmd_optimize(args: argparse.Namespace) -> int:
+    """値幅の候補を総当たりし、探索期間で選んで検証期間で確かめる（発注しない）。"""
+    from .optimize import default_grid, optimize_symbol
+
+    config = load_config(args.config)
+    setup_logging(config.log_file, verbose=args.verbose, timezone=config.market.timezone)
+
+    symbols = ([s.strip() for s in args.symbols.split(",") if s.strip()]
+               if args.symbols else sorted({r.symbol for r in config.rules}))
+    bars = _fetch_with_fallback(symbols, args)
+    if bars is None:
+        return 1
+
+    grid = default_grid()
+    print(f"\n値幅の候補 {len(grid)} 通りを、銘柄ごとに総当たりします…")
+
+    reports = []
+    for symbol in sorted(bars):
+        print(f"  {symbol} を計算中…", flush=True)
+        reports.append(optimize_symbol(
+            config, symbol, bars[symbol],
+            holdout=args.holdout, quantity=args.quantity, grid=grid, top=args.top,
+            segment=args.segment,
+        ))
+    _print_optimize(reports, holdout=args.holdout, segment=args.segment)
+    return 0
+
+
+def _print_optimize(reports, *, holdout: int, segment: int) -> None:
+    for report in reports:
+        print(f"\n{'=' * 78}")
+        if report.skipped:
+            print(f"■ {report.symbol} — 対象外: {report.skipped}")
+            continue
+
+        capital = report.reference * report.quantity
+        print(f"■ {report.symbol}   基準価格 {report.reference:,.0f} 円 × "
+              f"{report.quantity} 株 = {capital:,.0f} 円")
+        print(f"  1 日の値幅（中央値）{report.daily_range_pct:.1f}% より広い "
+              f"{report.tested} 通りを、{segment} 営業日ずつの区間で総当たり")
+        print(f"{'-' * 78}")
+        print(f"{'値幅の設定':<32}{'探索期間（選定に使用）':<26}{'検証期間（本命）'}")
+        for train, hold in zip(report.train, report.holdout):
+            train_cell = (f"{train.realized:+,.0f}円 "
+                          f"勝ち区間{train.steady_pct:.0f}% {train.trades}回")
+            hold_cell = (f"{hold.realized:+,.0f}円 "
+                         f"勝ち区間{hold.steady_pct:.0f}% {hold.trades}回")
+            print(f"{train.candidate.label():<32}{train_cell:<26}{hold_cell}")
+
+        if report.train and report.train[0].realized <= 0:
+            print("\n  ※ 探索期間では、どの設定でも利益が出ていません。"
+                  "後知恵で選んでも勝てない相場だった、ということです。")
+            print("     この銘柄をこのやり方で売買するのは見送るのが妥当です。")
+
+        best = report.holdout[0] if report.holdout else None
+        if best:
+            print(f"\n  検証期間（1 位の設定）: {best.return_pct:+.1f}%"
+                  f"（{best.realized:+,.0f} 円 / 投下 {capital:,.0f} 円）"
+                  f"  最悪の区間 {best.worst_segment:+,.0f} 円")
+        print(f"  同じ期間を持ちっぱなし  : {report.hold_return_pct:+.1f}%")
+
+    print(f"\n{'=' * 78}")
+    print("読み方")
+    print(f"{'-' * 78}")
+    print(f"  * 期間は {segment} 営業日ずつに区切り、区間ごとに直前の終値を基準に線を引き直しています。")
+    print("    このボットの線は固定の値段なので、株価が離れれば置き去りになります。")
+    print("    長い期間を一続きで測ると、値幅の良し悪しではなく株価のドリフトを測ることになります。")
+    print("  * 「勝ち区間」= 利益で終わった区間の割合。**これが「安定して」の中身**です。")
+    print("    合計だけでは、1 区間の大当たりで持ち上がっていても見分けられません。")
+    print(f"  * 検証期間 = 直近 {holdout} 営業日。候補の選定には一切使っていません。")
+    print("    実運用で期待できる姿に近いのはこちらです。探索期間の数字は後知恵です。")
+    print("  * 持ちっぱなしに負けているなら、売買を繰り返す意味はありません。")
+    print("  * 手数料と税金は計算に含まれていません。往復するほど不利になります。")
+    print("  * 日足の 4 点でなぞった概算です。往復の回数は実際とずれます。")
+    print("  * 過去にうまくいった設定が、これから儲かる保証はありません。")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kabu", description="楽天証券 RSS 自動売買ボット")
     parser.add_argument("-c", "--config", default="config.yaml", help="設定ファイル (既定: config.yaml)")
@@ -459,6 +541,21 @@ def build_parser() -> argparse.ArgumentParser:
     back.add_argument("--cache-dir", default=".kabu_cache",
                       help="取得した株価データの保存先")
     back.set_defaults(func=cmd_backtest)
+
+    opt = sub.add_parser(
+        "optimize", help="過去データから、どの値幅設定が良かったかを総当たりで探す"
+    )
+    opt.add_argument("--symbols", help="対象銘柄をカンマ区切りで（既定: config.yaml のルール）")
+    opt.add_argument("--holdout", type=int, default=60,
+                     help="検証用に取り分ける直近の営業日数 (既定: 60)")
+    opt.add_argument("--quantity", type=int, default=100, help="1 回の株数 (既定: 100)")
+    opt.add_argument("--top", type=int, default=3, help="銘柄ごとに見る上位件数 (既定: 3)")
+    opt.add_argument("--segment", type=int, default=20,
+                     help="何営業日ごとに線を引き直すか (既定: 20)")
+    opt.add_argument("--provider", choices=("stooq", "yahoo"), default="yahoo",
+                     help="株価データの取得元 (既定: yahoo)")
+    opt.add_argument("--cache-dir", default=".kabu_cache", help="取得したデータの保存先")
+    opt.set_defaults(func=cmd_optimize)
 
     sub.add_parser("status", help="現在の状態を表示する").set_defaults(func=cmd_status)
     sub.add_parser("doctor", help="接続と設定を診断する").set_defaults(func=cmd_doctor)

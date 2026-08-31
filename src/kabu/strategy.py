@@ -36,6 +36,11 @@ def decide(
         if runtime.cycles_done >= rule.max_cycles:
             return None
         if quote.price <= rule.buy_at:
+            if rule.stop_loss is not None and quote.price <= rule.stop_loss:
+                # 買いラインだけでなく損切りラインまで割り込んでいる値段。ここで
+                # 買うと、次の瞬間に損切りが発動して即撤退する。それを繰り返すと
+                # 手数料を払いながら往復するだけになるので、下げ止まるまで買わない。
+                return None
             return OrderIntent(
                 rule_id=rule.id,
                 symbol=rule.symbol,
