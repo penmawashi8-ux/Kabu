@@ -61,3 +61,59 @@ def test_error_message_shows_what_was_actually_read(config_factory):
     message = str(exc.value)
     assert "#NAME?" in message
     assert "7203.T" in message
+
+
+# --------------------------------------------- どの Excel に繋がったかの診断
+
+class _RecordingSheet:
+    """書き込みを受け付けるだけのシート（読み返しは別途差し替える）。"""
+
+    def range(self, start, end=None):
+        class _R:
+            value = None
+            formula = None
+        return _R()
+
+
+def _bridge_on(config, sheet):
+    bridge = ExcelBridge.__new__(ExcelBridge)
+    bridge._config = config
+    bridge._book = type("Book", (), {
+        "sheets": {"QUOTES": sheet},
+        "fullname": r"C:\work\Kabu\quotes.xlsx",
+        "app": type("App", (), {"pid": 1234})(),
+    })()
+    return bridge
+
+
+def test_describe_names_the_excel_and_workbook(config_factory):
+    """繋いだ先が分かること（別の Excel を掴んでいる事故を見つけるため）。"""
+    described = _bridge_on(config_factory(), _RecordingSheet()).describe()
+    assert "1234" in described
+    assert "quotes.xlsx" in described
+
+
+def test_build_quote_sheet_warns_when_the_write_does_not_stick(config_factory, caplog, monkeypatch):
+    """書いた銘柄が読み返せないときは警告する（別のブックに書いていた場合）。"""
+    bridge = _bridge_on(config_factory(), _RecordingSheet())
+    # 1 回目（書く前の確認）は空、2 回目（書いた後の読み返し）は 1 銘柄だけ返す。
+    answers = iter([[], ["6758.T"]])
+    monkeypatch.setattr(ExcelBridge, "_existing_symbols",
+                        staticmethod(lambda sheet, count: next(answers)))
+
+    with caplog.at_level("WARNING"):
+        bridge.build_quote_sheet(["6758.T", "7203.T"])
+
+    assert any("読み返せません" in r.getMessage() for r in caplog.records)
+
+
+def test_build_quote_sheet_is_quiet_when_the_write_sticks(config_factory, caplog, monkeypatch):
+    bridge = _bridge_on(config_factory(), _RecordingSheet())
+    answers = iter([[], ["6758.T", "7203.T"]])
+    monkeypatch.setattr(ExcelBridge, "_existing_symbols",
+                        staticmethod(lambda sheet, count: next(answers)))
+
+    with caplog.at_level("WARNING"):
+        bridge.build_quote_sheet(["6758.T", "7203.T"])
+
+    assert not [r for r in caplog.records if "読み返せません" in r.getMessage()]

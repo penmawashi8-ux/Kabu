@@ -49,6 +49,21 @@ class ExcelBridge:
         self._config = config
         self._xw = _import_xlwings()
         self._book = self._open_book()
+        # 同じファイルを別の Excel が開いていると、値が見えている画面と
+        # kabu が読む先が食い違う。どちらに繋がったかは必ず残す。
+        log.info("Excel に接続しました: %s", self.describe())
+
+    def describe(self) -> str:
+        """どの Excel のどのブックに繋がっているか（診断用）。"""
+        try:
+            pid = self._book.app.pid
+        except Exception:  # pragma: no cover - 取れなくても診断は続ける
+            pid = "?"
+        try:
+            name = self._book.fullname
+        except Exception:  # pragma: no cover
+            name = "?"
+        return f"Excel(pid={pid}) {name}"
 
     def _open_books(self) -> list[Any]:
         """今 開かれているブックを全部集める。
@@ -162,7 +177,15 @@ class ExcelBridge:
             sheet.range((i, 1)).value = symbol
             sheet.range((i, 2)).formula = f'={rss.quote_function}(A{i},"{rss.price_field}")'
             sheet.range((i, 3)).formula = f'={rss.quote_function}(A{i},"{rss.time_field}")'
-        log.info("QUOTES シートを %d 銘柄で初期化しました", len(symbols))
+        # 書いたつもりで別のブックに書いていた、を検出できるよう読み返す。
+        written = self._existing_symbols(sheet, len(symbols))
+        if written != symbols:
+            log.warning(
+                "QUOTES シートに書いた銘柄が読み返せません（書いた: %s / 読めた: %s）。"
+                "同じファイルを別の Excel が開いていないか確認してください: %s",
+                symbols, written, self.describe(),
+            )
+        log.info("QUOTES シートを %d 銘柄で初期化しました（%s）", len(symbols), self.describe())
 
     def read_quotes(self, symbols: list[str]) -> dict[str, float]:
         """QUOTES シートから現在値をまとめて読む。数値でないセルは欠測として返さない。"""
