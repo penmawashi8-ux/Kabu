@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import yaml
 
@@ -311,3 +311,65 @@ def load_config(path: str | Path) -> Config:
     with p.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     return Config.from_dict(raw or {})
+
+
+def _tidy_number(value: float) -> float | int:
+    """2800.0 のような割り切れる値は 2800 と書く（人が書いた見た目に近づける）。"""
+    return int(value) if float(value).is_integer() else value
+
+
+def _rule_to_mapping(rule: Rule) -> dict[str, Any]:
+    """Rule を config.yaml の 1 ブロックと同じ見た目の dict に戻す。
+
+    既定値と同じ項目は書かない。人が `config.example.yaml` を見よう見まねで
+    書いたときと同じくらい素直な見た目にするため。
+    """
+    m: dict[str, Any] = {
+        "id": rule.id,
+        "symbol": rule.symbol,
+        "quantity": rule.quantity,
+        "buy_at": _tidy_number(rule.buy_at),
+        "sell_at": _tidy_number(rule.sell_at),
+    }
+    if rule.stop_loss is not None:
+        m["stop_loss"] = _tidy_number(rule.stop_loss)
+    if rule.max_cycles != 1:
+        m["max_cycles"] = rule.max_cycles
+    if rule.order_type != OrderType.LIMIT:
+        m["order_type"] = rule.order_type.value
+    if not rule.enabled:
+        m["enabled"] = rule.enabled
+    return m
+
+
+def save_rules(path: str | Path, rules: Sequence[Rule]) -> None:
+    """画面（`kabu play`）で確定したルールを、config.yaml の `rules:` にだけ書き戻す。
+
+    `rules:` 以外のキー・コメント・並び順は一切変えない
+    （ruamel.yaml のラウンドトリップ読み書きでそれを保証している）。
+    """
+    from ruamel.yaml import YAML  # 依存を使う場所を絞るため遅延 import
+
+    p = Path(path)
+    if not p.exists():
+        raise ConfigError(
+            f"{p} が見つかりません。先に `copy config.example.yaml config.yaml` を実行してください"
+        )
+
+    rt = YAML()
+    rt.preserve_quotes = True
+    rt.width = 4096  # 長い行を勝手に折り返させない
+    # config.example.yaml と同じ見た目（`  - id: ...` の 2 マス下げ）にする。
+    rt.indent(mapping=2, sequence=4, offset=2)
+
+    with p.open("r", encoding="utf-8") as f:
+        data = rt.load(f)
+    if data is None:
+        raise ConfigError(f"{p}: 中身が空です")
+    if not isinstance(data, dict):
+        raise ConfigError(f"{p}: トップレベルはマッピングにしてください")
+
+    data["rules"] = [_rule_to_mapping(r) for r in rules]
+
+    with p.open("w", encoding="utf-8") as f:
+        rt.dump(data, f)
