@@ -26,6 +26,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
+from typing import Callable
 
 from .errors import KabuError
 
@@ -284,16 +285,26 @@ def fetch_many(
     *,
     provider: str = "stooq",
     cache_dir: str | Path = ".kabu_cache",
+    pause: float = 0.0,
+    on_progress: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, list[Bar]]:
-    """複数銘柄ぶん。1 銘柄でも取れれば返す（取れなかった銘柄は含めない）。"""
+    """複数銘柄ぶん。1 銘柄でも取れれば返す（取れなかった銘柄は含めない）。
+
+    pause: 1 銘柄ごとに空ける秒数。100 銘柄を一気に取ると取得元に負荷をかけ、
+           制限をかけられることがあるので、まとめて取るときは間を置く。
+    """
     out: dict[str, list[Bar]] = {}
     errors: list[str] = []
-    for symbol in symbols:
+    for i, symbol in enumerate(symbols, start=1):
+        if on_progress:
+            on_progress(i, len(symbols), symbol)
         try:
             out[symbol] = fetch_bars(symbol, provider=provider, cache_dir=cache_dir)
             log.info("%s: %d 日ぶんの実データを読み込みました", symbol, len(out[symbol]))
         except MarketDataError as exc:
             errors.append(f"{symbol}: {exc}")
+        if pause and i < len(symbols):
+            time.sleep(pause)
     if not out:
         raise MarketDataError("どの銘柄も取得できませんでした。\n  " + "\n  ".join(errors))
     for message in errors:
