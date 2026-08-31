@@ -416,6 +416,8 @@ kabu -c config.yaml backtest --provider yahoo   # 取得元を変える（既定
 ```powershell
 kabu -c config.yaml optimize                          # config.yaml の銘柄で探索
 kabu -c config.yaml optimize --symbols 7203.T,9432.T  # 銘柄を指定
+kabu -c config.yaml optimize --universe major         # 内蔵の主要銘柄で探索
+kabu -c config.yaml optimize --symbols-file mylist.txt
 kabu -c config.yaml optimize --segment 20 --holdout 60
 ```
 
@@ -473,9 +475,24 @@ kabu -c config.yaml optimize --segment 20 --holdout 60
 `kabu compare` は**やり方そのもの**を並べて、同じ期間・同じ執行ルールで比べます。
 
 ```powershell
+kabu -c config.yaml compare --universe large    # 内蔵の主要 116 銘柄で一気に調べる
+kabu -c config.yaml compare --universe major    # 主要 16 銘柄だけ（手早く試す）
 kabu -c config.yaml compare --symbols 7203.T,6758.T,9432.T
-kabu -c config.yaml compare --days 250      # 直近 250 営業日だけで比べる
+kabu -c config.yaml compare --symbols-file mylist.txt   # 自分の一覧を使う
+kabu -c config.yaml compare --days 250          # 直近 250 営業日だけで比べる
 ```
+
+銘柄が多いときは、まず**手法ごとの平均成績**と「持ちっぱなしに勝てた銘柄数」が出て、
+そのあと一番良かった手法について銘柄別の上位が並びます。全銘柄の内訳を見たいときは
+`--detail` を付けてください。`--universe large` は取得に数分かかります
+（取得元に負荷をかけないよう間を置いています。一度取れば `.kabu_cache/` に残ります）。
+
+`--symbols-file` に渡すファイルは 1 行 1 銘柄で、`7203` / `7203.T` /
+`7203,トヨタ自動車` / `7203 トヨタ自動車` のどれでも読めます（`#` で始まる行は無視）。
+証券会社のスクリーニング結果をそのまま貼り付けて使えます。
+
+> 内蔵の一覧は**主要銘柄を手で並べたもの**で、日経平均や TOPIX の正確な構成銘柄では
+> ありません。取得に失敗した銘柄は自動で読み飛ばします。
 
 | 手法 | 考え方 |
 |---|---|

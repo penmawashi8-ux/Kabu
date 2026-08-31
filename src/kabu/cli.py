@@ -292,15 +292,50 @@ def cmd_init_sheet(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_symbols(config: Config, args: argparse.Namespace) -> list[str]:
+    """調べる銘柄を決める。--symbols-file > --symbols > --universe > config.yaml。"""
+    from .universe import from_file, symbols as universe_symbols
+
+    if getattr(args, "symbols_file", None):
+        return from_file(args.symbols_file)
+    if getattr(args, "symbols", None):
+        return [s.strip() for s in args.symbols.split(",") if s.strip()]
+    if getattr(args, "universe", None):
+        return universe_symbols(args.universe)
+    return sorted({r.symbol for r in config.rules})
+
+
+def _add_symbol_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--symbols", help="対象銘柄をカンマ区切りで")
+    parser.add_argument("--symbols-file", help="銘柄を書いたファイル（1 行 1 銘柄）")
+    parser.add_argument("--universe", choices=("major", "large"),
+                        help="内蔵の銘柄リスト。major=主要 16 銘柄 / large=主要 116 銘柄")
+
+
 def _fetch_with_fallback(symbols: list[str], args: argparse.Namespace):
     """実データを取ってくる。片方の取得元が制限をかけていたらもう片方を試す。"""
     from .marketdata import MarketDataError, fetch_many
 
     order = [args.provider] + [p for p in ("yahoo", "stooq") if p != args.provider]
+    many = len(symbols) > 8
+
+    def progress(done: int, total: int, symbol: str) -> None:
+        # 100 銘柄を取ると数分かかる。止まって見えないように出す。
+        print(f"\r  {done}/{total} {symbol:<12}", end="", flush=True)
+
     for i, provider in enumerate(order):
-        print(f"実データを取得しています（{provider}）… {', '.join(symbols)}")
+        listed = f"{len(symbols)} 銘柄" if many else ", ".join(symbols)
+        print(f"実データを取得しています（{provider}）… {listed}")
         try:
-            return fetch_many(symbols, provider=provider, cache_dir=args.cache_dir)
+            bars = fetch_many(
+                symbols, provider=provider, cache_dir=args.cache_dir,
+                # まとめて取るときは間を置く（取得元に制限をかけられないように）。
+                pause=0.2 if many else 0.0,
+                on_progress=progress if many else None,
+            )
+            if many:
+                print(f"\r  {len(bars)}/{len(symbols)} 銘柄ぶん取得しました" + " " * 20)
+            return bars
         except MarketDataError as exc:
             print(f"\n{provider} からは取得できませんでした:\n  {exc}\n")
             if i + 1 < len(order):
@@ -425,8 +460,7 @@ def cmd_optimize(args: argparse.Namespace) -> int:
     setup_logging(config.log_file, verbose=args.verbose, timezone=config.market.timezone)
     quiet_analysis(args.verbose)   # 候補ごとに何千周も回すのでログは画面に出さない
 
-    symbols = ([s.strip() for s in args.symbols.split(",") if s.strip()]
-               if args.symbols else sorted({r.symbol for r in config.rules}))
+    symbols = _resolve_symbols(config, args)
     bars = _fetch_with_fallback(symbols, args)
     if bars is None:
         return 1
@@ -526,46 +560,99 @@ def _rpad(text: str, width: int) -> str:
 
 def cmd_compare(args: argparse.Namespace) -> int:
     """売買手法そのものを並べて比べる（値幅の調整ではなく、やり方の比較）。"""
+    import statistics
+
     from .research import compare
+    from .universe import name_of
 
     config = load_config(args.config)
     setup_logging(config.log_file, verbose=args.verbose, timezone=config.market.timezone)
     quiet_analysis(args.verbose)
 
-    symbols = ([s.strip() for s in args.symbols.split(",") if s.strip()]
-               if args.symbols else sorted({r.symbol for r in config.rules}))
+    symbols = _resolve_symbols(config, args)
     bars = _fetch_with_fallback(symbols, args)
     if bars is None:
         return 1
 
-    totals: dict[str, list[float]] = {}
+    # 銘柄ごとの結果を集める（画面には出さず、まず全体を集計する）。
+    per_symbol: dict[str, list] = {}
     for symbol in sorted(bars):
         series = bars[symbol][-args.days:] if args.days else bars[symbol]
         if len(series) < 220:
-            print(f"\n■ {symbol} — データが足りません（{len(series)} 日）")
             continue
+        per_symbol[symbol] = compare(series)
 
-        outcomes = compare(series)
-        span = f"{series[0].day} 〜 {series[-1].day}（{len(series)} 営業日）"
-        print(f"\n{'=' * 78}")
-        print(f"■ {symbol}   {span}")
-        print(f"{'-' * 78}")
-        print(_pad("手法", 40) + _rpad("損益", 7) + _rpad("売買", 7)
-              + _rpad("勝率", 7) + _rpad("最大下落", 9) + _rpad("保有", 6))
-        for outcome in outcomes:
-            totals.setdefault(outcome.name, []).append(outcome.return_pct)
-            print(f"{_pad(outcome.name, 40)}"
-                  f"{outcome.return_pct:>+6.1f}%{outcome.trades:>5}回"
-                  f"{outcome.win_rate:>6.0f}%{outcome.max_drawdown_pct:>8.1f}%"
-                  f"{outcome.exposure_pct:>5.0f}%")
+    if not per_symbol:
+        print("\n比べられる銘柄がありませんでした（各銘柄 220 営業日ぶん以上のデータが要ります）。")
+        return 1
 
-    if len(totals.get("持ちっぱなし", [])) > 1:
-        print(f"\n{'=' * 78}")
-        print(f"■ 全銘柄の平均")
-        print(f"{'-' * 78}")
-        for name, values in totals.items():
-            average = sum(values) / len(values)
-            print(f"{_pad(name, 40)}{average:>+6.1f}%")
+    any_symbol = next(iter(per_symbol))
+    names = [o.name for o in per_symbol[any_symbol]]
+    span = f"{len(per_symbol)} 銘柄"
+
+    print(f"\n{'=' * 78}")
+    print(f"■ 手法ごとの成績（{span}の平均）")
+    print(f"{'-' * 78}")
+    print(_pad("手法", 40) + _rpad("平均損益", 9) + _rpad("中央値", 8)
+          + _rpad("勝った銘柄", 11) + _rpad("平均下落", 9))
+
+    hold_by_symbol = {sym: outs[0].return_pct for sym, outs in per_symbol.items()}
+    ranking: list[tuple[str, float, int]] = []
+    for i, name in enumerate(names):
+        returns = [outs[i].return_pct for outs in per_symbol.values()]
+        drawdowns = [outs[i].max_drawdown_pct for outs in per_symbol.values()]
+        beat_hold = sum(
+            1 for sym, outs in per_symbol.items()
+            if outs[i].return_pct > hold_by_symbol[sym]
+        )
+        average = sum(returns) / len(returns)
+        ranking.append((name, average, beat_hold))
+        won = len([r for r in returns if r > 0])
+        print(_pad(name, 40)
+              + f"{average:>+8.1f}%{statistics.median(returns):>+7.1f}%"
+              + f"{won:>6}/{len(returns):<4}"
+              + f"{sum(drawdowns) / len(drawdowns):>8.1f}%")
+
+    print(f"\n  「勝った銘柄」= 損益がプラスだった銘柄数 / 全体")
+    print(f"{'-' * 78}")
+    print("  持ちっぱなしに勝てた銘柄数")
+    for name, _average, beat_hold in ranking:
+        if name == "持ちっぱなし":
+            continue
+        print(f"    {_pad(name, 44)}{beat_hold:>3} / {len(per_symbol)} 銘柄")
+
+    # 一番成績の良かった手法（持ちっぱなしを除く）で、銘柄ごとの上位を出す。
+    best_name, _best_avg, _ = max(
+        (r for r in ranking if r[0] != "持ちっぱなし"), key=lambda r: r[1]
+    )
+    best_index = names.index(best_name)
+    rows = sorted(
+        (
+            (sym, outs[best_index].return_pct, hold_by_symbol[sym], outs[best_index].trades)
+            for sym, outs in per_symbol.items()
+        ),
+        key=lambda row: row[1] - row[2], reverse=True,
+    )
+    print(f"\n{'=' * 78}")
+    print(f"■ {best_name} が持ちっぱなしに勝った銘柄（上位 {min(args.top, len(rows))} 件）")
+    print(f"{'-' * 78}")
+    print(_pad("銘柄", 30) + _rpad("この手法", 10) + _rpad("持ちっぱなし", 14) + _rpad("差", 9))
+    for symbol, mine, hold, _trades in rows[:args.top]:
+        label = f"{symbol} {name_of(symbol)}".strip()
+        print(_pad(label, 30) + f"{mine:>+9.1f}%{hold:>+13.1f}%{mine - hold:>+8.1f}%")
+
+    if args.detail:
+        for symbol, outcomes in per_symbol.items():
+            print(f"\n{'=' * 78}")
+            print(f"■ {symbol} {name_of(symbol)}")
+            print(f"{'-' * 78}")
+            print(_pad("手法", 40) + _rpad("損益", 7) + _rpad("売買", 7)
+                  + _rpad("勝率", 7) + _rpad("最大下落", 9) + _rpad("保有", 6))
+            for outcome in outcomes:
+                print(_pad(outcome.name, 40)
+                      + f"{outcome.return_pct:>+6.1f}%{outcome.trades:>5}回"
+                      + f"{outcome.win_rate:>6.0f}%{outcome.max_drawdown_pct:>8.1f}%"
+                      + f"{outcome.exposure_pct:>5.0f}%")
 
     print(f"\n{'=' * 78}")
     print("読み方")
@@ -573,11 +660,12 @@ def cmd_compare(args: argparse.Namespace) -> int:
     print("  * 判断は当日の終値まで、約定は翌日の寄り付き。未来を覗いていません。")
     print("  * 各手法のパラメータは教科書的な既定値で固定しています。この期間に")
     print("    合わせて調整はしていません（調整すると必ず良く見えてしまうため）。")
-    print("  * 「最大下落」= 評価額の山からの最大下落率。どれだけ含み損に耐える")
-    print("    必要があったか。損益が同じなら、この数字が小さいほうが良い手法です。")
-    print("  * 「保有」= 期間のうち株を持っていた日の割合。低いほど資金を遊ばせています。")
-    print("  * 税金（利益の約 20.315%）と滑りは含んでいません。売買回数が多い手法ほど不利です。")
+    print("  * 「平均下落」= 評価額の山からの最大下落率の平均。どれだけ含み損に")
+    print("    耐える必要があったか。損益が同じなら、小さいほうが良い手法です。")
+    print("  * 税金（利益の約 20.315%）と滑りは含んでいません。売買が多い手法ほど不利です。")
     print("  * 持ちっぱなしに勝てない手法は、手間とリスクを増やしているだけです。")
+    print("  * 銘柄ごとの内訳は --detail を付けると出ます。")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -633,7 +721,7 @@ def build_parser() -> argparse.ArgumentParser:
     opt = sub.add_parser(
         "optimize", help="過去データから、どの値幅設定が良かったかを総当たりで探す"
     )
-    opt.add_argument("--symbols", help="対象銘柄をカンマ区切りで（既定: config.yaml のルール）")
+    _add_symbol_options(opt)
     opt.add_argument("--holdout", type=int, default=60,
                      help="検証用に取り分ける直近の営業日数 (既定: 60)")
     opt.add_argument("--quantity", type=int, default=100, help="1 回の株数 (既定: 100)")
@@ -646,9 +734,11 @@ def build_parser() -> argparse.ArgumentParser:
     opt.set_defaults(func=cmd_optimize)
 
     cmp_ = sub.add_parser("compare", help="売買手法そのものを並べて比べる")
-    cmp_.add_argument("--symbols", help="対象銘柄をカンマ区切りで（既定: config.yaml のルール）")
+    _add_symbol_options(cmp_)
     cmp_.add_argument("--days", type=int, default=0,
                       help="直近何営業日ぶんで比べるか (既定: 0 = 取得できた全期間)")
+    cmp_.add_argument("--top", type=int, default=15, help="銘柄別に並べる件数 (既定: 15)")
+    cmp_.add_argument("--detail", action="store_true", help="銘柄ごとの内訳も全部出す")
     cmp_.add_argument("--provider", choices=("stooq", "yahoo"), default="yahoo",
                       help="株価データの取得元 (既定: yahoo)")
     cmp_.add_argument("--cache-dir", default=".kabu_cache", help="取得したデータの保存先")
