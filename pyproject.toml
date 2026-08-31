@@ -10,6 +10,10 @@ requires-python = ">=3.11"
 dependencies = [
     "PyYAML>=6.0",
     "ruamel.yaml>=0.18",
+    # Windows には IANA タイムゾーンDBが標準で入っておらず、zoneinfo が
+    # "Asia/Tokyo" を解決できずに落ちる。tzdata パッケージで補う
+    # （Linux/Mac は OS 側にタイムゾーンDBがあるので不要）。
+    "tzdata; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
