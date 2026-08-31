@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# 実運用ファイル（設定・状態・ログ）はコミットしない
+config.yaml
+state.json
+logs/
+journal.csv
+STOP
+~$*.xlsx

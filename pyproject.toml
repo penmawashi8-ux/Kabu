@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kabu"
+version = "0.1.0"
+description = "楽天証券 マーケットスピードII RSS を使った価格トリガー式の自動売買ボット"
+requires-python = ">=3.11"
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# Excel 連携は Windows 専用。Linux/Mac ではペーパートレードとテストのみ動く。
+windows = ["xlwings>=0.31"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+kabu = "kabu.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

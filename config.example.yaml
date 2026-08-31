@@ -1,0 +1,109 @@
+# ------------------------------------------------------------------------------
+# kabu 設定ファイル
+#   cp config.example.yaml config.yaml して、config.yaml を編集してください。
+#   config.yaml は .gitignore 済みです。パスワードは絶対にここに書かないこと。
+# ------------------------------------------------------------------------------
+
+# paper = 発注をシミュレーションするだけ / live = 実際に楽天証券へ発注する
+mode: paper
+
+# 株価を見に行く間隔（秒）。1 秒未満は指定できません。
+poll_interval_sec: 3
+
+state_file: state.json
+journal_file: journal.csv
+log_file: logs/kabu.log
+
+excel:
+  # マーケットスピードII RSS の関数を置くワークブック（絶対パス推奨）
+  workbook: C:/kabu/quotes.xlsx
+  quote_sheet: QUOTES     # kabu が自動で組み立てます
+  order_sheet: ORDERS     # 注文一覧を出すシート（人が 1 度だけ関数を貼る）
+  visible: true           # Excel を画面に出す。目視できたほうが安全
+
+rss:
+  # 株価取得。RSS のバージョンで関数名・項目名が違う場合はここを実際の名前に直す。
+  quote_function: RssMarket
+  price_field: 現在値
+  time_field: 現在値時刻
+
+  # 注文一覧シートの見出し文字列 → kabu 内部の項目名の対応。
+  # 実際のシートの見出しに合わせて書き換えてください。
+  order_columns:
+    order_id: 注文番号
+    symbol: 銘柄コード
+    side: 売買区分
+    quantity: 注文数量
+    filled_quantity: 約定数量
+    avg_price: 約定単価
+    status: 状態
+
+  order:
+    # 発注に使う RSS のマクロ関数名と、その引数の並び順。
+    # !! 必ず楽天証券のRSSマニュアルで実際のシグネチャを確認して合わせてください !!
+    # kabu は arg_order に並べたキーの値を、この順で関数に渡すだけです。
+    function: RssOrderMulti
+    cancel_function: RssOrderCancel
+    arg_order:
+      - order_kind
+      - symbol
+      - market
+      - side
+      - account_type
+      - quantity
+      - order_type
+      - price
+      - expiry
+      - password
+    # arg_order のうち、売買ごとに変わらない固定値はここに書く。
+    # symbol / side / quantity / order_type / price / password は kabu が埋めます。
+    defaults:
+      order_kind: 新規
+      account_type: 特定
+      expiry: 本日中
+
+  # 取引パスワードは環境変数から読みます（設定ファイルには書かない）。
+  #   PowerShell:  $env:KABU_TRADE_PASSWORD = "..."
+  password_env: KABU_TRADE_PASSWORD
+
+risk:
+  max_orders_per_day: 20          # 1 日の発注件数上限
+  max_notional_per_order: 300000  # 1 回の約定代金上限（円）
+  max_notional_per_day: 1000000   # 1 日の買付総額上限（円）
+  min_seconds_between_orders: 10  # 連射防止
+  max_price_deviation_pct: 10     # 前回値からこれ以上飛んだ値段は誤配信とみなし無視
+  quote_max_age_sec: 60           # これより古い株価では発注しない
+  pending_timeout_sec: 600        # 注文がこの秒数約定しなければ停止して人間を待つ
+  kill_switch_file: STOP          # このファイルを作るとループが安全に停止する
+
+market:
+  timezone: Asia/Tokyo
+  sessions:                       # 東証（2024/11 以降の後場は 15:30 まで）
+    - ["09:00", "11:30"]
+    - ["12:30", "15:30"]
+  trade_cutoff: "15:20"           # これ以降は新規の買いを出さない
+  # close_positions_at: "15:25"   # 有効にすると保有分を成行で手仕舞いする
+  holidays:                       # 祝日・年末年始は YYYY-MM-DD で列挙
+    - "2026-01-01"
+    - "2026-01-02"
+    - "2026-01-03"
+
+rules:
+  - id: toyota
+    symbol: "7203.T"    # 銘柄コード.市場
+    quantity: 100       # 単元株数の倍数で
+    buy_at: 2800        # 現在値がこの値以下になったら買う
+    sell_at: 3000       # 現在値がこの値以上になったら売る
+    stop_loss: 2700     # 任意。この値以下になったら成行で損切り
+    order_type: limit   # limit（指値）または market（成行）
+    max_cycles: 3       # 何往復まで繰り返すか
+    enabled: true
+
+  - id: sony
+    symbol: "6758.T"
+    quantity: 100
+    buy_at: 3200
+    sell_at: 3500
+    order_type: limit
+    max_cycles: 1
+    enabled: false
