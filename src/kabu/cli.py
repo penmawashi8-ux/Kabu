@@ -117,6 +117,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"停止ファイル      : {config.risk.kill_switch_file} "
           f"({'存在します（起動しません）' if Path(config.risk.kill_switch_file).exists() else '無し'})")
 
+    # RSS アドインは Excel のビット数に合うものを登録しないと読み込めない。
+    # 一番よく間違えるところなので、こちらで判定して名指しする。
+    from .excelinfo import describe_addin_setup
+
+    for line in describe_addin_setup():
+        print(line)
+
     # 株価取得と発注は別物なので、別々に判定する。株価だけ使いたい場合
     # （--source rss でシミュレーションするだけ）に、注文シートが未整備でも
     # 「NG」と出て混乱しないようにする。
