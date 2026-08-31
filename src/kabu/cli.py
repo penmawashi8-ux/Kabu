@@ -301,12 +301,21 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     setup_logging(config.log_file, verbose=args.verbose, timezone=config.market.timezone)
 
     symbols = sorted({r.symbol for r in config.rules})
-    print(f"実データを取得しています（{args.provider}）… {', '.join(symbols)}")
-    try:
-        bars = fetch_many(symbols, provider=args.provider, cache_dir=args.cache_dir)
-    except MarketDataError as exc:
-        print(f"\n実データを取得できませんでした:\n  {exc}\n")
-        print("ネットワーク（社内プロキシなど）を確認するか、--provider yahoo を試してください。")
+    # 片方の取得元が制限をかけていることがあるので、駄目ならもう片方を試す。
+    order = [args.provider] + [p for p in ("yahoo", "stooq") if p != args.provider]
+    bars = None
+    for i, provider in enumerate(order):
+        print(f"実データを取得しています（{provider}）… {', '.join(symbols)}")
+        try:
+            bars = fetch_many(symbols, provider=provider, cache_dir=args.cache_dir)
+            break
+        except MarketDataError as exc:
+            print(f"\n{provider} からは取得できませんでした:\n  {exc}\n")
+            if i + 1 < len(order):
+                print(f"{order[i + 1]} で取り直します。\n")
+    if bars is None:
+        print("どの取得元からも実データを取得できませんでした。"
+              "ネットワーク（社内プロキシなど）を確認してください。")
         return 1
 
     since = _date.fromisoformat(args.since) if args.since else None
@@ -344,7 +353,9 @@ def _print_backtest(result, config: Config) -> None:
                   f"買 {t.entry_price:,.1f} → 売 {t.exit_price:,.1f}（{why}）  "
                   f"{mark}{abs(t.profit):,.0f} 円")
     else:
-        print("  売買: なし（トリガーに届かなかったか、安全弁で見送りました）")
+        print("  売買: なし")
+
+    _print_untriggered(result, config)
 
     if result.open_positions:
         print("\n  持ち越し（買ったが売れずに終わった）")
@@ -368,6 +379,35 @@ def _print_backtest(result, config: Config) -> None:
     print("\n  ※ 日足の 4 点（寄り・高値・安値・引け）でなぞった概算です。")
     print("     高値と安値のどちらが先だったかは日足からは分からないため、")
     print("     往復の回数は実際とずれることがあります。")
+
+
+def _print_untriggered(result, config: Config) -> None:
+    """一度も買えなかったルールについて、値段がどれだけ足りなかったかを出す。
+
+    「何も起きなかった」だけでは、ルールが悪いのか相場が動かなかったのかが
+    分からない。買いラインと期間中の安値の差を出して判断できるようにする。
+    """
+    traded = {t.rule_id for t in result.trades} | {t.rule_id for t in result.open_positions}
+    lines: list[str] = []
+    for rule in config.rules:
+        if rule.id in traded:
+            continue
+        series = [b for b in result.bars.get(rule.symbol, []) if b.day in result.days]
+        if not series:
+            lines.append(f"    [{rule.id}] {rule.symbol}: この期間のデータがありません")
+            continue
+        low = min(b.low for b in series)
+        head = f"    [{rule.id}] {rule.symbol}  買いライン {rule.buy_at:,.0f} / 期間の安値 {low:,.0f}"
+        if low <= rule.buy_at:
+            # 値段は届いていたのに買えていない = 安全弁か時間帯で止まっている。
+            lines.append(f"{head}  → 値段は届いていました（上の見送り理由を確認してください）")
+            continue
+        gap = low - rule.buy_at
+        pct = gap / low * 100          # 「いまの水準からあと何 % 下げれば」を出す
+        lines.append(f"{head}  → あと {gap:,.0f} 円（{pct:.1f}%）下げれば届きます")
+    if lines:
+        print("\n  買えなかったルール")
+        print("\n".join(lines))
 
 
 def build_parser() -> argparse.ArgumentParser:
