@@ -48,6 +48,23 @@ def _build_broker_and_quotes(config: Config) -> tuple[Broker, object]:
         return PaperBroker(), SimulatedFeed(config).read_quotes
 
 
+def _nisa_warning(config: Config) -> str:
+    """NISA 枠で回転売買をしようとしていたら警告する。
+
+    このボットは「買って売ってを繰り返す」「損切りする」前提で作ってある。
+    どちらも NISA とは相性が悪いので、気づかないまま実弾に進ませない。
+    """
+    account = str(config.rss.order_defaults.get("account_type", ""))
+    if "NISA" not in account.upper() and "ニーサ" not in account:
+        return ""
+    return (
+        f" 口座区分が「{account}」になっています。NISA 枠での自動売買には次の不利があります:\n"
+        "   * 売買を繰り返すと年間の投資枠をすぐ使い切ります（売っても枠が戻るのは翌年）\n"
+        "   * 損益通算・繰越控除ができないため、損切りしても税金面の救済がありません\n"
+        "   本ボットは繰り返しと損切りを前提にしています。特定口座を勧めます。"
+    )
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     setup_logging(config.log_file, verbose=args.verbose, timezone=config.market.timezone)
@@ -55,6 +72,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     if config.is_live:
         print("=" * 68)
         print(" 実弾モードです。実際に楽天証券へ注文が送信されます。")
+        warning = _nisa_warning(config)
+        if warning:
+            print("-" * 68)
+            print(warning)
+            print("-" * 68)
         print(f" ルール {len(config.rules)} 件 / 1 回あたり上限 "
               f"{config.risk.max_notional_per_order:,.0f} 円 / "
               f"1 日 {config.risk.max_orders_per_day} 件まで")

@@ -140,3 +140,35 @@ def test_seconds_until_open_skips_weekend():
 )
 def test_order_status_parsing(text, expected):
     assert parse_status(text) is expected
+
+
+# ------------------------------------------------------- NISA 口座の取り違え
+
+def config_with_account(account: str) -> Config:
+    return Config.from_dict({
+        **MINIMAL,
+        "mode": "live",
+        "rss": {"order": {"defaults": {"account_type": account}}},
+    })
+
+
+def test_nisa_account_is_warned_about():
+    """NISA 枠での回転売買は不利なので、実弾に進む前に気づかせる。"""
+    from kabu.cli import _nisa_warning
+
+    warning = _nisa_warning(config_with_account("NISA"))
+    assert "損益通算" in warning
+    assert "特定口座" in warning
+
+
+def test_nisa_warning_is_case_insensitive():
+    from kabu.cli import _nisa_warning
+
+    assert _nisa_warning(config_with_account("nisa成長投資枠"))
+
+
+def test_specific_account_is_not_warned_about():
+    from kabu.cli import _nisa_warning
+
+    assert _nisa_warning(config_with_account("特定")) == ""
+    assert _nisa_warning(Config.from_dict(MINIMAL)) == ""

@@ -59,6 +59,10 @@ rss:
     # symbol / side / quantity / order_type / price / password は kabu が埋めます。
     defaults:
       order_kind: 新規
+      # 特定口座を既定にしています。NISA 枠での自動売買は勧めません（README 参照）:
+      #   * 売買を繰り返すと年間の投資枠をすぐ使い切る（売っても年内は枠が戻らない）
+      #   * 損益通算・繰越控除ができないので、損切りしても税金面の救済がない
+      # NISA を指定した場合は起動時に警告を出します。
       account_type: 特定
       expiry: 本日中
 
