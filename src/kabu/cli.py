@@ -19,7 +19,7 @@ from .broker import Broker, PaperBroker
 from .clock import MarketClock
 from .config import Config, load_config
 from .errors import KabuError
-from .logging_setup import setup_logging
+from .logging_setup import quiet_analysis, setup_logging
 from .runner import Runner
 
 log = logging.getLogger(__name__)
@@ -317,6 +317,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
 
     config = load_config(args.config)
     setup_logging(config.log_file, verbose=args.verbose, timezone=config.market.timezone)
+    quiet_analysis(args.verbose)   # 1 周ごとのログで結果が流れないようにする
 
     symbols = sorted({r.symbol for r in config.rules})
     bars = _fetch_with_fallback(symbols, args)
@@ -421,6 +422,7 @@ def cmd_optimize(args: argparse.Namespace) -> int:
 
     config = load_config(args.config)
     setup_logging(config.log_file, verbose=args.verbose, timezone=config.market.timezone)
+    quiet_analysis(args.verbose)   # 候補ごとに何千周も回すのでログは画面に出さない
 
     symbols = ([s.strip() for s in args.symbols.split(",") if s.strip()]
                if args.symbols else sorted({r.symbol for r in config.rules}))
@@ -456,13 +458,20 @@ def _print_optimize(reports, *, holdout: int, segment: int) -> None:
         print(f"  1 日の値幅（中央値）{report.daily_range_pct:.1f}% より広い "
               f"{report.tested} 通りを、{segment} 営業日ずつの区間で総当たり")
         print(f"{'-' * 78}")
-        print(f"{'値幅の設定':<32}{'探索期間（選定に使用）':<26}{'検証期間（本命）'}")
-        for train, hold in zip(report.train, report.holdout):
-            train_cell = (f"{train.realized:+,.0f}円 "
-                          f"勝ち区間{train.steady_pct:.0f}% {train.trades}回")
-            hold_cell = (f"{hold.realized:+,.0f}円 "
-                         f"勝ち区間{hold.steady_pct:.0f}% {hold.trades}回")
-            print(f"{train.candidate.label():<32}{train_cell:<26}{hold_cell}")
+        for i, (train, hold) in enumerate(zip(report.train, report.holdout), start=1):
+            c = train.candidate
+            print(f"\n  {i}. {c.label()}")
+            print(f"     1 往復で狙う値幅 {c.gain_pct:+.1f}% / 損切りまで {c.loss_pct:+.1f}%"
+                  f"  → ±ゼロに必要な勝率 {c.breakeven_win_rate:.0f}%")
+            print(f"     探索期間  {train.realized:+,.0f}円  "
+                  f"勝ち区間 {train.steady_pct:.0f}%  売買 {train.trades}回")
+            note = ""
+            if hold.trades == 0:
+                note = "  ← 1 度も売買が成立していません"
+            elif hold.trades < 3:
+                note = "  ← 売買が少なすぎて判断材料になりません"
+            print(f"     検証期間  {hold.realized:+,.0f}円  "
+                  f"勝ち区間 {hold.steady_pct:.0f}%  売買 {hold.trades}回{note}")
 
         if report.train and report.train[0].realized <= 0:
             print("\n  ※ 探索期間では、どの設定でも利益が出ていません。"
@@ -487,7 +496,9 @@ def _print_optimize(reports, *, holdout: int, segment: int) -> None:
     print(f"  * 検証期間 = 直近 {holdout} 営業日。候補の選定には一切使っていません。")
     print("    実運用で期待できる姿に近いのはこちらです。探索期間の数字は後知恵です。")
     print("  * 持ちっぱなしに負けているなら、売買を繰り返す意味はありません。")
-    print("  * 手数料と税金は計算に含まれていません。往復するほど不利になります。")
+    print("  * 手数料・税金・滑りは計算に含まれていません。楽天証券の「ゼロコース」を")
+    print("    選んでいれば国内株の売買手数料は 0 円ですが、利益には約 20.315% の税金が")
+    print("    かかります（特定口座）。損切りの成行注文で滑るぶんも実質的なコストです。")
     print("  * 日足の 4 点でなぞった概算です。往復の回数は実際とずれます。")
     print("  * 過去にうまくいった設定が、これから儲かる保証はありません。")
 
