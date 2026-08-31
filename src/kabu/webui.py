@@ -53,7 +53,9 @@ _PAGE_SKELETON = """<!doctype html>
 class GameFeed:
     """手で動かせる株価。自動モードでは中心へ引き戻しつつランダムに揺れる。"""
 
-    def __init__(self, config: Config, *, auto: bool = True) -> None:
+    # auto は既定でオフ。開いた瞬間に勝手に売買が始まると、利用者が自分の
+    # ルールを確かめる前に画面が動いてしまう。動かすかどうかは本人に選ばせる。
+    def __init__(self, config: Config, *, auto: bool = False) -> None:
         self._lock = threading.Lock()
         self._auto = auto
         self._rng = random.Random()
@@ -84,6 +86,13 @@ class GameFeed:
         with self._lock:
             for symbol, centre in self._centre.items():
                 self._price[symbol] = centre
+
+    @property
+    def manual_allowed(self) -> bool:
+        return True
+
+    def describe(self) -> dict[str, Any]:
+        return {"kind": "sim", "label": "擬似株価", "asof": None, "span": "", "progress": 0.0}
 
     def read_quotes(self, symbols: list[str]) -> dict[str, float]:
         with self._lock:
@@ -129,8 +138,10 @@ class UiJournal(Journal):
 class GameSession:
     """Runner をバックグラウンドで回し、UI 用のスナップショットを作る。"""
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, feed_factory=None) -> None:
         self.config = config
+        # 株価をどこから取るか。既定は擬似株価、実データ再生や RSS も差せる。
+        self._feed_factory = feed_factory or (lambda cfg: GameFeed(cfg))
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -150,7 +161,7 @@ class GameSession:
         self._history = {
             rule.symbol: deque(maxlen=_HISTORY_POINTS) for rule in self.config.rules
         }
-        self.feed = GameFeed(self.config)
+        self.feed = self._feed_factory(self.config)
         self._build_runner()
 
     def _build_runner(self) -> None:
@@ -286,6 +297,8 @@ class GameSession:
                 "kind": "engine",
                 "now": self.runner.clock.now().isoformat(),
                 "auto": self.feed.auto,
+                "source": self.feed.describe(),
+                "manual": getattr(self.feed, "manual_allowed", True),
                 "orders": self._orders,
                 "fills": self._fills,
                 "realized": round(self._realized, 1),
@@ -364,8 +377,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"error": "not found"}, 404)
 
 
-def serve(config: Config, host: str = "127.0.0.1", port: int = 8765) -> None:
-    session = GameSession(config)
+def serve(config: Config, host: str = "127.0.0.1", port: int = 8765,
+          feed_factory=None, banner: str = "") -> None:
+    session = GameSession(config, feed_factory)
     session.start()
 
     handler = type("Handler", (_Handler,), {"session": session, "page": _load_page()})
@@ -374,6 +388,8 @@ def serve(config: Config, host: str = "127.0.0.1", port: int = 8765) -> None:
 
     print()
     print("  シミュレーターを起動しました（お金は動きません）")
+    if banner:
+        print(f"  {banner}")
     print(f"  ブラウザで開いてください →  {url}")
     print("  終了するには Ctrl-C")
     print()

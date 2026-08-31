@@ -142,8 +142,61 @@ def cmd_play(args: argparse.Namespace) -> int:
         state_file=args.state,
         journal_file=args.journal,
     )
-    serve(config, host=args.host, port=args.port)
+    factory, banner = _price_source(config, args)
+    serve(config, host=args.host, port=args.port, feed_factory=factory, banner=banner)
     return 0
+
+
+def _price_source(config: Config, args: argparse.Namespace):
+    """株価をどこから取るかを決める。取れなければ擬似株価に落とす。"""
+    from .webui import GameFeed
+
+    if args.source == "sim":
+        return (lambda cfg: GameFeed(cfg)), "株価: 擬似（実際の値段ではありません）"
+
+    if args.source == "rss":
+        # 実弾と同じ経路。マーケットスピードII にログインしていれば本物の
+        # リアルタイム株価が流れてくる。発注だけはシミュレーションのまま。
+        from .rss import ExcelBridge
+
+        bridge = ExcelBridge(config)
+        bridge.build_quote_sheet(sorted({r.symbol for r in config.rules}))
+
+        class _RssFeed:
+            auto = True
+            manual_allowed = False
+
+            def set_auto(self, flag): pass
+            def set_price(self, symbol, price): pass
+            def reset(self): pass
+            def read_quotes(self, symbols): return bridge.read_quotes(symbols)
+            def describe(self):
+                return {"kind": "rss", "label": "マーケットスピードII RSS（リアルタイム）",
+                        "asof": None, "span": "", "progress": 0.0}
+
+        return (lambda cfg: _RssFeed()), "株価: マーケットスピードII RSS のリアルタイム値"
+
+    # args.source == "real"
+    from .marketdata import MarketDataError, ReplayFeed, fetch_many
+
+    symbols = sorted({r.symbol for r in config.rules})
+    print(f"実際の株価を取得しています（{args.provider}）… {', '.join(symbols)}")
+    try:
+        bars = fetch_many(symbols, provider=args.provider, cache_dir=args.cache_dir)
+    except MarketDataError as exc:
+        print(f"\n実データを取得できませんでした:\n  {exc}\n")
+        print("擬似株価に切り替えて起動します。"
+              "（社内ネットワークやプロキシで外に出られない場合は "
+              "--source rss か --source sim を使ってください）\n")
+        return (lambda cfg: GameFeed(cfg)), "株価: 擬似（実データの取得に失敗）"
+
+    span = ""
+    for series in bars.values():
+        if series:
+            span = f"{series[0].day:%Y-%m-%d} 〜 {series[-1].day:%Y-%m-%d}"
+            break
+    feed = ReplayFeed(bars, speed=args.speed)
+    return (lambda cfg: feed), f"株価: 実データ再生 {span}（{args.provider}・日足）"
 
 
 def cmd_init_sheet(args: argparse.Namespace) -> int:
@@ -174,6 +227,17 @@ def build_parser() -> argparse.ArgumentParser:
                       help="立会時間内でしか動かさない（既定はいつでも動く）")
     play.add_argument("--state", default="play_state.json", help="シミュレーション用の状態ファイル")
     play.add_argument("--journal", default="play_journal.csv", help="シミュレーション用の記録ファイル")
+    play.add_argument(
+        "--source", choices=("sim", "real", "rss"), default="sim",
+        help="株価の出どころ。sim=擬似（既定） / real=実際の日足を再生 / "
+             "rss=マーケットスピードII のリアルタイム",
+    )
+    play.add_argument("--provider", choices=("stooq", "yahoo"), default="stooq",
+                      help="--source real のときの取得元 (既定: stooq)")
+    play.add_argument("--speed", type=int, default=4,
+                      help="--source real の再生速度。1 秒あたり何点進むか (既定: 4)")
+    play.add_argument("--cache-dir", default=".kabu_cache",
+                      help="取得した株価データの保存先")
     play.set_defaults(func=cmd_play, anytime=True)
 
     sub.add_parser("status", help="現在の状態を表示する").set_defaults(func=cmd_status)

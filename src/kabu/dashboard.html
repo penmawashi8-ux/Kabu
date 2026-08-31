@@ -143,6 +143,10 @@
   }
   .badge[data-live="engine"] .dot { background: var(--good); }
   .badge[data-live="demo"] .dot   { background: var(--accent); }
+  /* 株価が本物かどうかは一目で分かる必要がある */
+  .badge[data-source="sim"]    .dot { background: var(--ink-muted); }
+  .badge[data-source="replay"] .dot { background: var(--sell); }
+  .badge[data-source="rss"]    .dot { background: var(--good); }
 
   .safe-note {
     display: flex;
@@ -484,13 +488,14 @@
       <span class="badge" id="engine-badge" data-live="demo">
         <span class="dot"></span><span id="engine-text">デモモード</span>
       </span>
+      <span class="badge" id="source-badge"><span class="dot"></span><span id="source-text">擬似株価</span></span>
       <span class="badge num" id="clock">--:--:--</span>
     </div>
   </header>
 
   <p class="safe-note">
     <strong>お金は動きません。</strong>
-    表示されている注文と損益はすべてシミュレーションです。証券会社には一切接続していません。
+    <span id="safe-text">表示されている注文と損益はすべてシミュレーションです。</span>
   </p>
 
   <section class="stats" aria-label="サマリー">
@@ -538,7 +543,7 @@
       <div class="field">
         <label for="f-base">開始価格（円）</label>
         <input id="f-base" type="number" min="1" step="1" value="3000">
-        <span class="sub">ここを基準に推奨値を出します</span>
+        <span class="sub" id="f-base-sub">ここを基準に推奨値を出します</span>
       </div>
       <div class="field">
         <label id="f-width-label">値幅の狙い</label>
@@ -547,10 +552,7 @@
       </div>
     </div>
 
-    <p class="editor-hint">
-      開始価格はシミュレーション上の出発点です。<strong>実際の株価ではありません</strong>
-      — 本物に近づけたいときは、証券会社の画面に出ている値を入れてください。
-    </p>
+    <p class="editor-hint" id="editor-hint"></p>
 
     <div class="editor-body triggers">
       <div class="field">
@@ -706,7 +708,7 @@
   class DemoEngine {
     constructor() {
       this.kind = "demo";
-      this.auto = true;
+      this.auto = false;   // 勝手に動き出さない。開始は利用者が決める
       this.rules = [
         { id: "toyota", symbol: "7203.T", quantity: 100,
           buy_at: 2880, sell_at: 3120, stop_loss: 2784, max_cycles: 99 },
@@ -810,6 +812,8 @@
       return {
         kind: "demo",
         auto: this.auto,
+        manual: true,
+        source: { kind: "sim", label: "擬似株価", asof: null, span: "", progress: 0 },
         now: new Date().toISOString(),
         orders: this.orders,
         fills: this.fills,
@@ -969,6 +973,8 @@
   let engine = null;
   let dragging = null;
   let currentRules = [];
+  let manualAllowed = true;
+  let sourceKind = "sim";
   let ruleSignature = "";
   let editingId = null;
 
@@ -1089,6 +1095,26 @@
     document.getElementById("engine-text").textContent =
       snap.kind === "engine" ? "Python エンジン接続中" : "デモモード（ブラウザ内）";
 
+    const src = snap.source || { kind: "sim", label: "擬似株価", asof: null, span: "" };
+    const srcBadge = document.getElementById("source-badge");
+    srcBadge.dataset.source = src.kind;
+    document.getElementById("source-text").textContent =
+      src.label + (src.asof ? ` ${src.asof}` : "");
+    srcBadge.title = src.span ? `データ期間 ${src.span}` : "";
+    sourceKind = src.kind;
+    paintBaseHelp();
+    document.getElementById("safe-text").textContent = src.kind === "sim"
+      ? "株価も注文も損益も、すべて作り物です。証券会社には接続していません。"
+      : src.kind === "replay"
+        ? `株価は実際の値段です（${src.span} の日足）。注文と損益はシミュレーションで、証券会社には送っていません。`
+        : "株価はマーケットスピードII のリアルタイム値です。注文と損益はシミュレーションで、証券会社には送っていません。";
+
+    // 実データ再生・RSS では株価を手で動かせない
+    manualAllowed = snap.manual !== false;
+    autoBtn.textContent = manualAllowed
+      ? (snap.auto ? "自動: オン" : "自動で株価を動かす")
+      : (snap.auto ? "再生中" : "再生する");
+
     // マーカーは約定イベントから引く
     const marks = {};
     for (const ev of snap.events) {
@@ -1115,7 +1141,7 @@
         (rule.note ? rule.note + " · " : "") + cyc;
 
       if (dragging !== rule.symbol) card.slider.value = String(rule.price);
-      card.slider.disabled = !!snap.auto;
+      card.slider.disabled = !!snap.auto || !manualAllowed;
 
       if (rule.position_qty && rule.entry_price) {
         unrealized += (rule.price - rule.entry_price) * rule.position_qty;
@@ -1239,6 +1265,35 @@
   function paintSymbolSub() {
     const name = CATALOG_BY_CODE.get(fCode.value.trim());
     F("f-symbol-sub").textContent = name || (fCode.value.trim() ? "リストにない銘柄" : "");
+    paintBaseHelp();
+  }
+
+  /** 開始価格まわりの案内。株価が本物かどうかで言うべきことが変わる。 */
+  function paintBaseHelp() {
+    const hint = F("editor-hint");
+    if (sourceKind === "sim") {
+      hint.innerHTML = "開始価格はシミュレーション上の出発点です。" +
+        "<strong>実際の株価ではありません</strong> — 本物に近づけたいときは、" +
+        "証券会社の画面に出ている値を入れてください。";
+    } else {
+      hint.innerHTML = "開始価格は<strong>推奨値を計算するための基準</strong>です。" +
+        "株価そのものは実データから流れてくるので、実際に動く値段には影響しません。";
+    }
+    // すでに画面に出ている銘柄なら、その現在値をワンタッチで基準にできる
+    const rule = currentRules.find((r) => r.symbol.split(".")[0] === fCode.value.trim());
+    const sub = F("f-base-sub");
+    if (rule && rule.price > 0 && sourceKind !== "sim") {
+      sub.innerHTML = `現在値 <b>${fmtPrice(rule.price)}</b> を基準にする` +
+        ' <button type="button" id="f-use-live" class="ghost"' +
+        ' style="padding:1px 7px;font-size:11px">使う</button>';
+      const btn = F("f-use-live");
+      if (btn) btn.addEventListener("click", () => {
+        fBase.value = String(Math.round(rule.price));
+        fillRecommended();
+      });
+    } else {
+      sub.textContent = "ここを基準に推奨値を出します";
+    }
   }
 
   fBase.addEventListener("input", fillRecommended);
@@ -1364,7 +1419,9 @@
 
   function setAutoUI(on) {
     autoBtn.setAttribute("aria-pressed", on ? "true" : "false");
-    autoBtn.textContent = on ? "自動: オン" : "自動で株価を動かす";
+    autoBtn.textContent = manualAllowed
+      ? (on ? "自動: オン" : "自動で株価を動かす")
+      : (on ? "再生中" : "再生する");
   }
 
   async function boot() {
