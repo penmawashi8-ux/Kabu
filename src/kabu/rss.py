@@ -172,16 +172,21 @@ class ExcelBridge:
         if last_row == 2:  # 1 銘柄のときは 1 次元で返ってくる
             values = [values]
         out: dict[str, float] = {}
+        seen: list[str] = []
         for row in values:
             if not row or row[0] is None:
                 continue
             symbol = str(row[0]).strip()
-            price = row[1]
-            if isinstance(price, (int, float)) and not isinstance(price, bool) and price > 0:
-                out[symbol] = float(price)
+            # RSS は現在値を数値で返すのが基本だが、セルの書式や RSS の版に
+            # よっては "2,980" のような文字列で返ることがある。どちらも受ける。
+            price = _to_float(row[1])
+            seen.append(f"{symbol}={row[1]!r}")
+            if price is not None and price > 0:
+                out[symbol] = price
         if not out:
             raise QuoteError(
                 "QUOTES シートから有効な株価を 1 件も取得できませんでした。\n"
+                f"  読めた中身    : {', '.join(seen) or '（空）'}\n"
                 "  1. マーケットスピードII を起動してログインしていますか\n"
                 "  2. QUOTES シートの現在値の列は何になっていますか\n"
                 "     #NAME? → その Excel に RSS アドインが入っていません。"
