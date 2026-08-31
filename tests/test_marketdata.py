@@ -303,3 +303,39 @@ def test_live_feed_updates_only_the_symbols_it_could_fetch(monkeypatch):
     quotes = feed.read_quotes(["7203.T", "6758.T"])
     assert quotes["7203.T"] == 3000.0     # 取れたほうは更新される
     assert quotes["6758.T"] == 3400.0     # 取れなかったほうは据え置き
+
+
+# ------------------------------------------- 取得元が CSV を返さなかったとき
+
+def test_stooq_rate_limit_message_is_surfaced():
+    """CSV のつもりが制限メッセージだった、を利用者がその場で判断できること。"""
+    from kabu.marketdata import MarketDataError, parse_stooq_csv
+
+    with pytest.raises(MarketDataError) as exc:
+        parse_stooq_csv("Exceeded the daily hits limit\n")
+    assert "Exceeded the daily hits limit" in str(exc.value)
+
+
+def test_stooq_html_response_is_surfaced():
+    from kabu.marketdata import MarketDataError, parse_stooq_csv
+
+    with pytest.raises(MarketDataError) as exc:
+        parse_stooq_csv("<!doctype html>\n<html><body>Please log in</body></html>")
+    assert "html" in str(exc.value).lower()
+
+
+def test_yahoo_error_payload_is_surfaced():
+    from kabu.marketdata import MarketDataError, parse_yahoo_json
+
+    with pytest.raises(MarketDataError) as exc:
+        parse_yahoo_json('{"chart":{"result":null,"error":{"code":"Not Found"}}}')
+    assert "Not Found" in str(exc.value)
+
+
+def test_snippet_keeps_errors_readable():
+    """長い応答でも 1 行に丸めて出す（ログが埋まらないように）。"""
+    from kabu.marketdata import _snippet
+
+    out = _snippet("a\n" * 500)
+    assert len(out) <= 210
+    assert "\n" not in out

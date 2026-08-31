@@ -63,6 +63,18 @@ class Bar:
 
 # --------------------------------------------------------------------- 解析
 
+def _snippet(text: str, limit: int = 200) -> str:
+    """応答の冒頭を 1 行にして返す（エラーに何が返ってきたかを添えるため）。
+
+    CSV のつもりが「レート制限に達しました」やログイン用の HTML だった、
+    という失敗を、利用者がその場で判断できるようにする。
+    """
+    flat = " ".join(text.split())
+    if len(flat) > limit:
+        flat = flat[:limit] + "…"
+    return flat or "（空）"
+
+
 def parse_stooq_csv(text: str) -> list[Bar]:
     """stooq の日足 CSV を読む。
 
@@ -71,7 +83,7 @@ def parse_stooq_csv(text: str) -> list[Bar]:
     """
     rows = list(csv.DictReader(io.StringIO(text.strip())))
     if not rows:
-        raise MarketDataError("株価データが空でした")
+        raise MarketDataError(f"株価データが空でした（応答: {_snippet(text)}）")
 
     bars: list[Bar] = []
     for row in rows:
@@ -90,7 +102,9 @@ def parse_stooq_csv(text: str) -> list[Bar]:
             continue
     if not bars:
         raise MarketDataError(
-            "株価データを 1 日ぶんも読めませんでした。銘柄コードが正しいか確認してください"
+            "株価データを 1 日ぶんも読めませんでした。"
+            "銘柄コードが正しいか、取得元が制限をかけていないか確認してください\n"
+            f"    取得元の応答: {_snippet(text)}"
         )
     return sorted(bars, key=lambda b: b.day)
 
@@ -104,7 +118,10 @@ def parse_yahoo_quote(payload: str) -> tuple[float, datetime | None]:
     try:
         meta = json.loads(payload)["chart"]["result"][0]["meta"]
     except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
-        raise MarketDataError(f"株価データの形式が想定と違います: {exc}") from exc
+        raise MarketDataError(
+            f"株価データの形式が想定と違います: {exc}\n"
+            f"    取得元の応答: {_snippet(payload)}"
+        ) from exc
 
     price = meta.get("regularMarketPrice")
     if not isinstance(price, (int, float)) or isinstance(price, bool) or price <= 0:
@@ -123,7 +140,7 @@ def parse_stooq_quote(text: str) -> tuple[float, datetime | None]:
     """
     rows = list(csv.DictReader(io.StringIO(text.strip())))
     if not rows:
-        raise MarketDataError("株価データが空でした")
+        raise MarketDataError(f"株価データが空でした（応答: {_snippet(text)}）")
     row = rows[0]
     try:
         price = float(row["Close"])
@@ -148,7 +165,10 @@ def parse_yahoo_json(payload: str) -> list[Bar]:
         stamps = result["timestamp"]
         quote = result["indicators"]["quote"][0]
     except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
-        raise MarketDataError(f"株価データの形式が想定と違います: {exc}") from exc
+        raise MarketDataError(
+            f"株価データの形式が想定と違います: {exc}\n"
+            f"    取得元の応答: {_snippet(payload)}"
+        ) from exc
 
     bars: list[Bar] = []
     for i, stamp in enumerate(stamps):
@@ -165,7 +185,10 @@ def parse_yahoo_json(payload: str) -> list[Bar]:
             )
         )
     if not bars:
-        raise MarketDataError("株価データを 1 日ぶんも読めませんでした")
+        raise MarketDataError(
+            "株価データを 1 日ぶんも読めませんでした\n"
+            f"    取得元の応答: {_snippet(payload)}"
+        )
     return sorted(bars, key=lambda b: b.day)
 
 
