@@ -39,32 +39,50 @@ rss:
     status: 状態
 
   order:
-    # 発注に使う RSS のマクロ関数名と、その引数の並び順。
-    # !! 必ず楽天証券のRSSマニュアルで実際のシグネチャを確認して合わせてください !!
-    # kabu は arg_order に並べたキーの値を、この順で関数に渡すだけです。
-    function: RssOrderMulti
-    cancel_function: RssOrderCancel
+    # 現物注文の関数。楽天証券のオンラインヘルプで確認した書式:
+    #   RssStockOrder(発注ID, 発注トリガー, 銘柄コード, 売買区分, 注文区分, SOR区分,
+    #                 注文数量, 価格区分, 注文価格, 執行条件, 注文期限, 口座区分,
+    #                 逆指値条件価格, 逆指値条件区分, 逆指値価格区分, 逆指値価格,
+    #                 セット注文区分, セット注文価格, セット注文執行条件, セット注文期限)
+    #   例: =RssStockOrder(1,1,4755,3,0,0,100,0,,1,,0)  → 楽天株 100 株を成行で買い
+    #
+    # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    # 未解決: RssStockOrder は「セルに書き込む関数」であって、VBA マクロとして
+    # 呼ぶものではない可能性が高いです。本ツールの発注処理は Application.Run で
+    # マクロとして呼ぶ実装になっているため、そのままでは動かないおそれがあります。
+    # 実弾（mode: live）に進む前に、必ず公式の関数一覧 PDF で確認してください:
+    #   https://marketspeed.jp/guide/manual/ms2rss_function.pdf
+    # 株価取得（kabu play --source rss）だけならこの項目は一切使いません。
+    # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    function: RssStockOrder
+    cancel_function: RssCancelOrder
     arg_order:
-      - order_kind
-      - symbol
-      - market
-      - side
-      - account_type
-      - quantity
-      - order_type
-      - price
-      - expiry
-      - password
+      - order_id           # 発注ID
+      - order_trigger      # 発注トリガー
+      - symbol             # 銘柄コード
+      - side               # 売買区分
+      - order_kind         # 注文区分
+      - sor                # SOR区分
+      - quantity           # 注文数量
+      - price_kind         # 価格区分
+      - price              # 注文価格
+      - condition          # 執行条件
+      - expiry             # 注文期限
+      - account_type       # 口座区分
     # arg_order のうち、売買ごとに変わらない固定値はここに書く。
-    # symbol / side / quantity / order_type / price / password は kabu が埋めます。
+    # symbol / side / quantity / price / price_kind は kabu が埋めます。
     defaults:
-      order_kind: 新規
+      order_id: 1
+      order_trigger: 1
+      order_kind: 0
+      sor: 0
+      condition: 1
+      expiry: ""
       # 特定口座を既定にしています。NISA 枠での自動売買は勧めません（README 参照）:
       #   * 売買を繰り返すと年間の投資枠をすぐ使い切る（売っても年内は枠が戻らない）
       #   * 損益通算・繰越控除ができないので、損切りしても税金面の救済がない
       # NISA を指定した場合は起動時に警告を出します。
-      account_type: 特定
-      expiry: 本日中
+      account_type: 0
 
   # 取引パスワードは環境変数から読みます（設定ファイルには書かない）。
   #   PowerShell:  $env:KABU_TRADE_PASSWORD = "..."
