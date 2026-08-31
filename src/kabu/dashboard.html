@@ -309,6 +309,82 @@
     flex: none;
   }
 
+  /* --------------------------------------------------------------- editor */
+  .editor-body {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+    gap: 12px 16px;
+    padding: 14px 18px;
+  }
+  .editor-body.triggers { border-top: 1px solid var(--rule); }
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .field > label { font-size: 11px; color: var(--ink-muted); font-weight: 600; }
+  .field input,
+  .field select {
+    font: inherit;
+    font-size: 14px;
+    padding: 7px 9px;
+    width: 100%;
+    border: 1px solid var(--ring);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--ink);
+  }
+  .field input[type="number"],
+  .field input[inputmode="numeric"] {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  .field input:focus-visible,
+  .field select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .field input:disabled { opacity: 0.45; }
+  .field .sub { font-size: 11px; color: var(--ink-muted); min-height: 15px; }
+  .field .sub b { color: var(--ink-2); font-weight: 600; }
+
+  .segmented { display: flex; }
+  .segmented button {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 7px 4px;
+    font-size: 12px;
+    border-radius: 0;
+  }
+  .segmented button:first-child { border-radius: 4px 0 0 4px; }
+  .segmented button:last-child  { border-radius: 0 4px 4px 0; }
+  .segmented button + button { border-left: none; }
+  .segmented button[aria-pressed="true"] + button { border-left: 1px solid var(--accent); }
+
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--ink-2);
+    font-weight: 500;
+  }
+  .check input { width: auto; accent-color: var(--accent); }
+
+  .editor-hint {
+    margin: 0;
+    padding: 0 18px 4px;
+    font-size: 12px;
+    color: var(--ink-muted);
+  }
+  .editor-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    padding: 8px 18px 16px;
+  }
+  .editor-error {
+    color: var(--bad);
+    font-size: 13px;
+    font-weight: 600;
+    flex: 1 1 240px;
+  }
+  .board-controls .spacer { flex: 1 1 auto; }
+
   /* -------------------------------------------------------------- tooltip */
   .tip {
     position: fixed;
@@ -440,7 +516,78 @@
     </div>
   </section>
 
+  <section class="panel" id="editor">
+    <h2 id="editor-title">銘柄とルールを決める</h2>
+
+    <div class="editor-body">
+      <div class="field">
+        <label for="f-symbol">銘柄</label>
+        <select id="f-symbol"></select>
+        <span class="sub" id="f-symbol-sub"></span>
+      </div>
+      <div class="field">
+        <label for="f-code">銘柄コード</label>
+        <input id="f-code" type="text" inputmode="numeric" maxlength="5" placeholder="7203">
+        <span class="sub">4 桁の数字</span>
+      </div>
+      <div class="field">
+        <label for="f-qty">株数</label>
+        <input id="f-qty" type="number" min="1" step="100" value="100">
+        <span class="sub">ふつうは 100 株単位</span>
+      </div>
+      <div class="field">
+        <label for="f-base">開始価格（円）</label>
+        <input id="f-base" type="number" min="1" step="1" value="3000">
+        <span class="sub">ここを基準に推奨値を出します</span>
+      </div>
+      <div class="field">
+        <label id="f-width-label">値幅の狙い</label>
+        <div class="segmented" id="f-width" role="group" aria-labelledby="f-width-label"></div>
+        <span class="sub" id="f-width-sub"></span>
+      </div>
+    </div>
+
+    <p class="editor-hint">
+      開始価格はシミュレーション上の出発点です。<strong>実際の株価ではありません</strong>
+      — 本物に近づけたいときは、証券会社の画面に出ている値を入れてください。
+    </p>
+
+    <div class="editor-body triggers">
+      <div class="field">
+        <label for="f-buy">買い（この値以下で買う）</label>
+        <input id="f-buy" type="number" min="1" step="1">
+        <span class="sub" id="f-buy-sub"></span>
+      </div>
+      <div class="field">
+        <label for="f-sell">売り（この値以上で売る）</label>
+        <input id="f-sell" type="number" min="1" step="1">
+        <span class="sub" id="f-sell-sub"></span>
+      </div>
+      <div class="field">
+        <label class="check"><input type="checkbox" id="f-stop-on" checked> 損切りを使う</label>
+        <input id="f-stop" type="number" min="1" step="1">
+        <span class="sub" id="f-stop-sub"></span>
+      </div>
+      <div class="field">
+        <label for="f-cycles">繰り返す回数</label>
+        <input id="f-cycles" type="number" min="1" max="999" step="1" value="99">
+        <span class="sub">買って売って 1 回</span>
+      </div>
+    </div>
+
+    <div class="editor-actions">
+      <button type="button" id="f-submit">この銘柄を追加</button>
+      <button type="button" id="f-recommend" class="ghost">推奨値に戻す</button>
+      <button type="button" id="f-cancel" class="ghost" hidden>編集をやめる</button>
+      <span class="editor-error" id="f-error" hidden role="alert"></span>
+    </div>
+  </section>
+
   <div id="boards"></div>
+  <p class="empty" id="boards-empty" hidden
+     style="background:var(--surface);border:1px solid var(--ring);border-radius:6px;margin:0">
+    銘柄がありません。上のフォームから追加してください。
+  </p>
 
   <section class="panel">
     <h2>売買記録</h2>
@@ -492,6 +639,67 @@
   };
 
   // ====================================================================
+  //  銘柄リストと推奨値
+  //  値段は持っていない（実際の株価を騙って出すことはしない）。開始価格は
+  //  利用者が入れた「シミュレーション上の出発点」で、推奨値はそこからの割合。
+  // ====================================================================
+  const CATALOG = [
+    { code: "7203", name: "トヨタ自動車" },
+    { code: "6758", name: "ソニーグループ" },
+    { code: "9984", name: "ソフトバンクグループ" },
+    { code: "6861", name: "キーエンス" },
+    { code: "8306", name: "三菱UFJフィナンシャル・グループ" },
+    { code: "9432", name: "日本電信電話（NTT）" },
+    { code: "9433", name: "KDDI" },
+    { code: "6098", name: "リクルートホールディングス" },
+    { code: "8035", name: "東京エレクトロン" },
+    { code: "7974", name: "任天堂" },
+    { code: "6501", name: "日立製作所" },
+    { code: "8058", name: "三菱商事" },
+    { code: "7267", name: "ホンダ" },
+    { code: "4063", name: "信越化学工業" },
+    { code: "4568", name: "第一三共" },
+    { code: "6902", name: "デンソー" },
+  ];
+  const CATALOG_BY_CODE = new Map(CATALOG.map((c) => [c.code, c.name]));
+
+  const WIDTHS = [
+    { key: "steady", label: "控えめ", pct: 0.02, note: "小さく何度も。約定しやすいぶん 1 回の利幅は薄い" },
+    { key: "normal", label: "標準", pct: 0.04, note: "ふつうの値幅。まずはここから" },
+    { key: "bold", label: "大きめ", pct: 0.08, note: "大きく狙う。届くまで時間がかかる" },
+  ];
+
+  // 呼値のイメージに合わせた丸め（実際の呼値単位は銘柄と価格帯で異なる）
+  const roundTick = (v) => (v < 5000 ? Math.round(v) : Math.round(v / 5) * 5);
+
+  function recommend(base, pct) {
+    return {
+      buy: Math.max(1, roundTick(base * (1 - pct))),
+      sell: Math.max(2, roundTick(base * (1 + pct))),
+      // 損切りは買い値よりさらに下。利幅より広めに取って、往復のノイズで
+      // すぐ切られないようにする。
+      stop: Math.max(1, roundTick(base * (1 - pct * 1.8))),
+    };
+  }
+
+  /** Python 側 config.py と同じ検証。デモモードでも同じ文言で弾く。 */
+  function validateRule(r) {
+    if (!/^[0-9]{4}[0-9A-Z]?$/.test(r.code)) return "銘柄コードは 4 桁の数字で入力してください";
+    if (!(r.quantity > 0)) return "株数は 1 以上にしてください";
+    if (!(r.buy_at > 0) || !(r.sell_at > 0)) return "買い・売りの値段を入力してください";
+    if (r.sell_at <= r.buy_at) {
+      return `売り ${fmtPrice(r.sell_at)} は買い ${fmtPrice(r.buy_at)} より高くしてください。` +
+             "そうでないと買った瞬間に売る無限ループになります";
+    }
+    if (r.stop_loss != null && r.stop_loss >= r.buy_at) {
+      return `損切り ${fmtPrice(r.stop_loss)} は買い ${fmtPrice(r.buy_at)} より安くしてください。` +
+             "そうでないと約定直後に損切りが発動します";
+    }
+    if (!(r.max_cycles > 0)) return "繰り返す回数は 1 以上にしてください";
+    return null;
+  }
+
+  // ====================================================================
   //  デモエンジン — サーバなしでもページ単体で遊べるようにする。
   //  ロジックは Python 版 strategy.py の価格トリガー判定と同じ形に揃えてある。
   // ====================================================================
@@ -501,9 +709,7 @@
       this.auto = true;
       this.rules = [
         { id: "toyota", symbol: "7203.T", quantity: 100,
-          buy_at: 2800, sell_at: 3000, stop_loss: 2700, max_cycles: 99 },
-        { id: "sony", symbol: "6758.T", quantity: 100,
-          buy_at: 3200, sell_at: 3500, stop_loss: null, max_cycles: 99 },
+          buy_at: 2880, sell_at: 3120, stop_loss: 2784, max_cycles: 99 },
       ];
       this.reset();
     }
@@ -534,6 +740,7 @@
 
     setPrice(symbol, value) { this.price[symbol] = value; }
     setAuto(flag) { this.auto = flag; }
+    setRules(rules) { this.rules = rules; this.reset(); }
 
     tick() {
       const now = Date.now();
@@ -645,6 +852,13 @@
     setPrice(symbol, value) { return this.post("price", { symbol, price: value }); }
     setAuto(flag) { return this.post("auto", { auto: flag }); }
     reset() { return this.post("reset", {}); }
+    async setRules(rules) {
+      const res = await this.post("rules", { rules });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "ルールを適用できませんでした");
+      }
+    }
     snapshot() { return this.last; }
   }
 
@@ -652,7 +866,19 @@
   //  チャート描画
   // ====================================================================
   // PAD_R は右側の価格ラベル（"損切 2,700" が最長）が収まる幅を確保する。
-  const W = 640, H = 200, PAD_L = 8, PAD_R = 88, PAD_T = 10, PAD_B = 20;
+  const W = 640, H = 200, PAD_L = 8, PAD_R = 96, PAD_T = 10, PAD_B = 20;
+
+  /** 1,2,5 × 10^n のうち target に近いもの。ボタンの刻み幅に使う。 */
+  function niceStep(target) {
+    const exp = Math.floor(Math.log10(Math.max(target, 1)));
+    const base = Math.pow(10, exp);
+    for (const m of [1, 2, 5]) if (target <= m * base) return m * base;
+    return 10 * base;
+  }
+
+  /** 銘柄の値幅に合わせた 1 クリックの動き幅。50,000 円の株を ±10 円ずつ
+      動かしても何も起きないので、値幅の 1/20 を目安にする。 */
+  const nudgeStep = (rule) => niceStep((rule.sell_at - rule.buy_at) / 20);
 
   function domainOf(rule) {
     // 目盛りを固定する。株価が動くたびに軸が伸縮すると、線が動いたのか
@@ -742,12 +968,16 @@
   const cards = new Map();
   let engine = null;
   let dragging = null;
+  let currentRules = [];
+  let ruleSignature = "";
+  let editingId = null;
 
   function buildCard(rule) {
     const el = document.createElement("section");
     el.className = "board";
     el.style.marginBottom = "20px";
     const [lo, hi] = domainOf(rule);
+    const step = nudgeStep(rule);
     el.innerHTML = `
       <div class="board-head">
         <span class="code num">${rule.symbol}</span>
@@ -765,14 +995,17 @@
         <div class="ladder">
           <span class="ladder-label">高</span>
           <input type="range" data-role="slider"
-                 min="${lo.toFixed(1)}" max="${hi.toFixed(1)}" step="0.5"
+                 min="${lo.toFixed(1)}" max="${hi.toFixed(1)}"
+                 step="${Math.max(0.1, step / 20)}"
                  aria-label="${rule.symbol} の株価を動かす">
           <span class="ladder-label">安</span>
         </div>
       </div>
       <div class="board-controls">
-        <button type="button" data-role="down">下げる −10</button>
-        <button type="button" data-role="up">上げる +10</button>
+        <button type="button" data-role="down">下げる −${fmt(step)}</button>
+        <button type="button" data-role="up">上げる +${fmt(step)}</button>
+        <button type="button" class="ghost" data-role="edit">ルールを変える</button>
+        <button type="button" class="ghost" data-role="remove">外す</button>
         <span class="legend">
           <span><i style="border-color:var(--sell)"></i>売り ${fmtPrice(rule.sell_at)}</span>
           <span><i style="border-color:var(--buy)"></i>買い ${fmtPrice(rule.buy_at)}</span>
@@ -793,8 +1026,10 @@
       slider.value = String(next);
       engine.setPrice(rule.symbol, Number(slider.value));
     };
-    el.querySelector('[data-role="up"]').addEventListener("click", () => nudge(10));
-    el.querySelector('[data-role="down"]').addEventListener("click", () => nudge(-10));
+    el.querySelector('[data-role="up"]').addEventListener("click", () => nudge(step));
+    el.querySelector('[data-role="down"]').addEventListener("click", () => nudge(-step));
+    el.querySelector('[data-role="edit"]').addEventListener("click", () => editRule(rule.id));
+    el.querySelector('[data-role="remove"]').addEventListener("click", () => removeRule(rule.id));
 
     slider.addEventListener("pointerdown", () => { dragging = rule.symbol; });
     slider.addEventListener("input", () => {
@@ -836,6 +1071,16 @@
 
   function render(snap) {
     if (!snap) return;
+    currentRules = snap.rules;
+
+    // ルールが変わったらボードは作り直す（軸も指値ラインもすべて変わるため）
+    const sig = JSON.stringify(snap.rules.map((r) =>
+      [r.id, r.symbol, r.quantity, r.buy_at, r.sell_at, r.stop_loss, r.max_cycles]));
+    if (sig !== ruleSignature) {
+      ruleSignature = sig;
+      cards.forEach((c) => c.el.remove());
+      cards.clear();
+    }
 
     document.getElementById("clock").textContent =
       new Date(snap.now).toLocaleTimeString("ja-JP");
@@ -850,6 +1095,8 @@
       if (ev.event !== "FILL") continue;
       (marks[ev.rule_id] ||= []).push({ t: ev.t, price: Number(ev.price), side: ev.side });
     }
+
+    document.getElementById("boards-empty").hidden = snap.rules.length > 0;
 
     let unrealized = 0, held = 0, cycles = 0;
     for (const rule of snap.rules) {
@@ -911,6 +1158,201 @@
     }).join("");
   }
 
+  // ====================================================================
+  //  ルール編集フォーム
+  // ====================================================================
+  const F = (id) => document.getElementById(id);
+  const fSymbol = F("f-symbol"), fCode = F("f-code"), fQty = F("f-qty");
+  const fBase = F("f-base"), fWidth = F("f-width");
+  const fBuy = F("f-buy"), fSell = F("f-sell"), fStop = F("f-stop");
+  const fStopOn = F("f-stop-on"), fCycles = F("f-cycles"), fError = F("f-error");
+  const fSubmit = F("f-submit"), fCancel = F("f-cancel");
+  let widthKey = "normal";
+
+  // 銘柄プルダウン
+  fSymbol.innerHTML =
+    CATALOG.map((c) => `<option value="${c.code}">${c.code} ${c.name}</option>`).join("") +
+    '<option value="">その他（コードを直接入力）</option>';
+
+  // 値幅プリセット
+  fWidth.innerHTML = WIDTHS.map((w) =>
+    `<button type="button" data-width="${w.key}" aria-pressed="${w.key === widthKey}">` +
+    `${w.label} ±${(w.pct * 100).toFixed(0)}%</button>`).join("");
+
+  function paintWidth() {
+    const chosen = WIDTHS.find((w) => w.key === widthKey);
+    for (const b of fWidth.querySelectorAll("button")) {
+      b.setAttribute("aria-pressed", b.dataset.width === widthKey ? "true" : "false");
+    }
+    F("f-width-sub").textContent = chosen.note;
+  }
+  fWidth.addEventListener("click", (ev) => {
+    const b = ev.target.closest("button[data-width]");
+    if (!b) return;
+    widthKey = b.dataset.width;
+    paintWidth();
+    fillRecommended();
+  });
+
+  function currentPct() {
+    return WIDTHS.find((w) => w.key === widthKey).pct;
+  }
+
+  /** 開始価格と値幅から推奨値を入れ直す。 */
+  function fillRecommended() {
+    const base = Number(fBase.value);
+    if (!(base > 0)) return;
+    const rec = recommend(base, currentPct());
+    fBuy.value = String(rec.buy);
+    fSell.value = String(rec.sell);
+    fStop.value = String(rec.stop);
+    paintTriggerHints();
+  }
+
+  /** 各入力の下に「開始価格から何%か」を出す。手で変えた値でも正しく出る。 */
+  function paintTriggerHints() {
+    const base = Number(fBase.value);
+    const rec = base > 0 ? recommend(base, currentPct()) : null;
+    const line = (input, key, sub) => {
+      const v = Number(input.value);
+      if (!(base > 0) || !(v > 0)) { F(sub).textContent = ""; return; }
+      const diff = ((v - base) / base) * 100;
+      const same = rec && Math.round(v) === rec[key];
+      F(sub).innerHTML = `開始価格から ${diff >= 0 ? "+" : "−"}${Math.abs(diff).toFixed(1)}%` +
+        (same ? " · <b>推奨値</b>" : rec ? ` · 推奨 <b>${fmtPrice(rec[key])}</b>` : "");
+    };
+    line(fBuy, "buy", "f-buy-sub");
+    line(fSell, "sell", "f-sell-sub");
+    if (fStopOn.checked) line(fStop, "stop", "f-stop-sub");
+    else F("f-stop-sub").textContent = "損切りなし";
+  }
+
+  fSymbol.addEventListener("change", () => {
+    if (fSymbol.value) fCode.value = fSymbol.value;
+    paintSymbolSub();
+  });
+  fCode.addEventListener("input", () => {
+    const match = CATALOG.some((c) => c.code === fCode.value);
+    fSymbol.value = match ? fCode.value : "";
+    paintSymbolSub();
+  });
+  function paintSymbolSub() {
+    const name = CATALOG_BY_CODE.get(fCode.value.trim());
+    F("f-symbol-sub").textContent = name || (fCode.value.trim() ? "リストにない銘柄" : "");
+  }
+
+  fBase.addEventListener("input", fillRecommended);
+  for (const input of [fBuy, fSell, fStop]) input.addEventListener("input", paintTriggerHints);
+  fStopOn.addEventListener("change", () => {
+    fStop.disabled = !fStopOn.checked;
+    paintTriggerHints();
+  });
+  F("f-recommend").addEventListener("click", fillRecommended);
+
+  function showError(message) {
+    fError.textContent = message || "";
+    fError.hidden = !message;
+  }
+
+  function readForm() {
+    const code = fCode.value.trim().toUpperCase();
+    const stopOn = fStopOn.checked;
+    return {
+      code,
+      id: editingId || uniqueId(code),
+      symbol: `${code}.T`,
+      quantity: Math.round(Number(fQty.value)),
+      buy_at: Number(fBuy.value),
+      sell_at: Number(fSell.value),
+      stop_loss: stopOn ? Number(fStop.value) : null,
+      order_type: "limit",
+      max_cycles: Math.round(Number(fCycles.value)),
+    };
+  }
+
+  function uniqueId(code) {
+    const taken = new Set(currentRules.map((r) => r.id));
+    let n = 1;
+    while (taken.has(`${code}-${n}`)) n += 1;
+    return `${code}-${n}`;
+  }
+
+  async function applyRules(rules, { keepForm = false } = {}) {
+    try {
+      await engine.setRules(rules);
+      showError("");
+      if (!keepForm) endEditing();
+      if (engine.kind === "demo") render(engine.snapshot());
+    } catch (err) {
+      showError(String(err.message || err));
+    }
+  }
+
+  function toPayload(rule) {
+    return {
+      id: rule.id, symbol: rule.symbol, quantity: rule.quantity,
+      buy_at: rule.buy_at, sell_at: rule.sell_at, stop_loss: rule.stop_loss,
+      order_type: "limit", max_cycles: rule.max_cycles,
+    };
+  }
+
+  fSubmit.addEventListener("click", () => {
+    const draft = readForm();
+    const problem = validateRule(draft);
+    if (problem) { showError(problem); return; }
+
+    const others = currentRules.filter((r) => r.id !== draft.id).map(toPayload);
+    if (!editingId && others.length >= 12) {
+      showError("銘柄は 12 件までにしてください");
+      return;
+    }
+    applyRules([...others, toPayload(draft)]);
+  });
+
+  function editRule(ruleId) {
+    const rule = currentRules.find((r) => r.id === ruleId);
+    if (!rule) return;
+    editingId = ruleId;
+    const code = rule.symbol.split(".")[0];
+    fCode.value = code;
+    fSymbol.value = CATALOG.some((c) => c.code === code) ? code : "";
+    fQty.value = String(rule.quantity);
+    fBase.value = String(Math.round((rule.buy_at + rule.sell_at) / 2));
+    fBuy.value = String(rule.buy_at);
+    fSell.value = String(rule.sell_at);
+    fStopOn.checked = rule.stop_loss != null;
+    fStop.disabled = rule.stop_loss == null;
+    fStop.value = String(rule.stop_loss ?? Math.round(rule.buy_at * 0.96));
+    fCycles.value = String(rule.max_cycles);
+
+    F("editor-title").textContent = `${rule.symbol} のルールを変える`;
+    fSubmit.textContent = "この内容に更新する";
+    fCancel.hidden = false;
+    showError("");
+    paintSymbolSub();
+    paintTriggerHints();
+    F("editor").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function endEditing() {
+    editingId = null;
+    F("editor-title").textContent = "銘柄とルールを決める";
+    fSubmit.textContent = "この銘柄を追加";
+    fCancel.hidden = true;
+    showError("");
+  }
+  fCancel.addEventListener("click", endEditing);
+
+  function removeRule(ruleId) {
+    const rest = currentRules.filter((r) => r.id !== ruleId).map(toPayload);
+    if (!rest.length) {
+      showError("最後の 1 銘柄は外せません。先に別の銘柄を追加してください");
+      return;
+    }
+    if (editingId === ruleId) endEditing();
+    applyRules(rest);
+  }
+
   // ------------------------------------------------------------------ 起動
   const autoBtn = document.createElement("button");
   const resetBtn = document.createElement("button");
@@ -926,6 +1368,12 @@
   }
 
   async function boot() {
+    fCode.value = CATALOG[0].code;
+    fSymbol.value = CATALOG[0].code;
+    paintSymbolSub();
+    paintWidth();
+    fillRecommended();
+
     const remote = new RemoteEngine();
     try {
       await remote.refresh();

@@ -14,22 +14,23 @@ import random
 import threading
 import time
 from collections import deque
-from datetime import datetime
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
 from .broker import PaperBroker
 from .clock import MarketClock
-from .config import Config
+from .config import Config, Rule
+from .errors import ConfigError
 from .journal import Journal
-from .models import RuleState
 from .runner import Runner
 
 log = logging.getLogger(__name__)
 
 _HISTORY_POINTS = 240
 _MAX_EVENTS = 60
+_MAX_RULES = 12
 
 _PAGE_SKELETON = """<!doctype html>
 <html lang="ja">
@@ -134,9 +135,7 @@ class GameSession:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._events: deque[dict[str, Any]] = deque(maxlen=_MAX_EVENTS)
-        self._history: dict[str, deque[tuple[int, float]]] = {
-            rule.symbol: deque(maxlen=_HISTORY_POINTS) for rule in config.rules
-        }
+        self._history: dict[str, deque[tuple[int, float]]] = {}
         self._orders = 0
         self._fills = 0
         self._realized = 0.0
@@ -144,7 +143,14 @@ class GameSession:
         self._seq = itertools.count(1)
         self._last_seq = 0
         self._clock = MarketClock(config.market)
-        self.feed = GameFeed(config)
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        """現在の config.rules に合わせて、株価・履歴・Runner を作り直す。"""
+        self._history = {
+            rule.symbol: deque(maxlen=_HISTORY_POINTS) for rule in self.config.rules
+        }
+        self.feed = GameFeed(self.config)
         self._build_runner()
 
     def _build_runner(self) -> None:
@@ -212,17 +218,45 @@ class GameSession:
 
     def reset(self) -> None:
         with self._lock:
+            self._clear_locked()
             self.feed.reset()
-            for hist in self._history.values():
-                hist.clear()
-            self._events.clear()
-            self._orders = 0
-            self._fills = 0
-            self._realized = 0.0
-            self._entry.clear()
-            self._last_seq = 0
-            Path(self.config.state_file).unlink(missing_ok=True)
             self._build_runner()
+
+    def _clear_locked(self) -> None:
+        """集計・履歴・保存済み状態を消す。呼び出し側でロックを取っていること。"""
+        for hist in self._history.values():
+            hist.clear()
+        self._events.clear()
+        self._orders = 0
+        self._fills = 0
+        self._realized = 0.0
+        self._entry.clear()
+        self._last_seq = 0
+        Path(self.config.state_file).unlink(missing_ok=True)
+
+    def apply_rules(self, raw_rules: list[Any]) -> None:
+        """画面で編集されたルールを適用する。
+
+        検証は設定ファイルとまったく同じ Rule.from_dict を通す。おかしなルールは
+        本番と同じ日本語のメッセージで弾かれるので、シミュレーターで通ったルールは
+        そのまま config.yaml に書ける。
+        """
+        if not isinstance(raw_rules, list) or not raw_rules:
+            raise ConfigError("ルールを 1 つ以上指定してください")
+        if len(raw_rules) > _MAX_RULES:
+            raise ConfigError(f"ルールは {_MAX_RULES} 件までにしてください")
+
+        rules = tuple(Rule.from_dict(r, i) for i, r in enumerate(raw_rules))
+        seen: set[str] = set()
+        for rule in rules:
+            if rule.id in seen:
+                raise ConfigError(f"ルール名 '{rule.id}' が重複しています")
+            seen.add(rule.id)
+
+        with self._lock:
+            self.config = replace(self.config, rules=rules)
+            self._clear_locked()
+            self._rebuild()
 
     # ------------------------------------------------------------- スナップ
 
@@ -317,6 +351,14 @@ class _Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "auto": self.session.feed.auto})
         elif path == "/api/reset":
             self.session.reset()
+            self._json({"ok": True})
+        elif path == "/api/rules":
+            try:
+                self.session.apply_rules(payload.get("rules"))
+            except ConfigError as exc:
+                # 設定ファイルと同じ検証なので、そのまま画面に出せば意味が通る。
+                self._json({"ok": False, "error": str(exc)}, 400)
+                return
             self._json({"ok": True})
         else:
             self._json({"error": "not found"}, 404)
