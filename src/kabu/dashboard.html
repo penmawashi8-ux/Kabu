@@ -1,0 +1,970 @@
+<title>株価トリガー実験室</title>
+
+<style>
+  /* ---------------------------------------------------------------- tokens */
+  :root {
+    color-scheme: light;
+    --plane:        #f6f6f4;
+    --surface:      #fcfcfb;
+    --surface-sunk: #f0efec;
+    --ink:          #0b0b0b;
+    --ink-2:        #52514e;
+    --ink-muted:    #898781;
+    --rule:         #e1e0d9;
+    --axis:         #c3c2b7;
+    --ring:         rgba(11, 11, 11, 0.10);
+
+    --buy:    #1baf7a;   /* 買いトリガー（常に直接ラベルを添える） */
+    --sell:   #2a78d6;   /* 売りトリガー */
+    --stop:   #d03b3b;   /* 損切りライン */
+    --good:   #006300;
+    --bad:    #d03b3b;
+    --accent: #2a78d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --plane:        #0d0d0d;
+      --surface:      #1a1a19;
+      --surface-sunk: #232321;
+      --ink:          #ffffff;
+      --ink-2:        #c3c2b7;
+      --ink-muted:    #898781;
+      --rule:         #2c2c2a;
+      --axis:         #383835;
+      --ring:         rgba(255, 255, 255, 0.10);
+
+      --buy:    #199e70;
+      --sell:   #3987e5;
+      --stop:   #d03b3b;
+      --good:   #0ca30c;
+      --bad:    #e66767;
+      --accent: #3987e5;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --plane:        #0d0d0d;
+    --surface:      #1a1a19;
+    --surface-sunk: #232321;
+    --ink:          #ffffff;
+    --ink-2:        #c3c2b7;
+    --ink-muted:    #898781;
+    --rule:         #2c2c2a;
+    --axis:         #383835;
+    --ring:         rgba(255, 255, 255, 0.10);
+
+    --buy:    #199e70;
+    --sell:   #3987e5;
+    --stop:   #d03b3b;
+    --good:   #0ca30c;
+    --bad:    #e66767;
+    --accent: #3987e5;
+  }
+
+  /* ------------------------------------------------------------------ base */
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--plane);
+    color: var(--ink);
+    font-family: "Zen Kaku Gothic New", system-ui, -apple-system, "Segoe UI",
+                 "Hiragino Sans", "Noto Sans JP", sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .num {
+    font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+
+  .wrap {
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 28px 20px 64px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+
+  .eyebrow {
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    font-weight: 600;
+  }
+
+  /* ---------------------------------------------------------------- header */
+  header.masthead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--rule);
+  }
+  header.masthead h1 {
+    margin: 2px 0 0;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+  }
+  .masthead-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--ring);
+    background: var(--surface);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .badge .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ink-muted);
+    flex: none;
+  }
+  .badge[data-live="engine"] .dot { background: var(--good); }
+  .badge[data-live="demo"] .dot   { background: var(--accent); }
+
+  .safe-note {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border: 1px solid var(--ring);
+    border-left: 3px solid var(--good);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--ink-2);
+    font-size: 13px;
+  }
+
+  /* ------------------------------------------------------------ stat tiles */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .stat {
+    background: var(--surface);
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .stat .label { font-size: 11px; color: var(--ink-muted); font-weight: 600; }
+  .stat .value { font-size: 24px; font-weight: 600; line-height: 1.25; }
+  .stat .sub   { font-size: 12px; color: var(--ink-2); }
+  .pos { color: var(--good); }
+  .neg { color: var(--bad); }
+
+  /* ----------------------------------------------------------- rule boards */
+  .board {
+    background: var(--surface);
+    border: 1px solid var(--ring);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .board-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px 14px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .board-head .code { font-size: 17px; font-weight: 700; }
+  .board-head .rid  { font-size: 12px; color: var(--ink-muted); }
+  .board-head .spacer { flex: 1 1 auto; }
+  .board-head .live-price { font-size: 20px; font-weight: 600; }
+
+  .pill {
+    padding: 3px 9px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    border: 1px solid var(--ring);
+    background: var(--surface-sunk);
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .pill[data-state="HOLDING"]      { color: var(--good); border-color: currentColor; }
+  .pill[data-state="BUY_PENDING"],
+  .pill[data-state="SELL_PENDING"] { color: var(--accent); border-color: currentColor; }
+  .pill[data-state="HALTED"]       { color: var(--bad); border-color: currentColor; }
+
+  .plot-area {
+    display: flex;
+    align-items: stretch;
+    gap: 10px;
+    padding: 14px 18px 4px;
+  }
+  .plot-area svg { display: block; width: 100%; height: auto; }
+  .plot-svg-holder { flex: 1 1 auto; min-width: 0; }
+
+  /* 価格スライダー: チャートの価格軸に並べ、上下にドラッグすると株価が動く */
+  .ladder {
+    flex: none;
+    width: 46px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .ladder-label {
+    font-size: 10px;
+    color: var(--ink-muted);
+    font-weight: 600;
+    writing-mode: horizontal-tb;
+  }
+  .ladder input[type="range"] {
+    writing-mode: vertical-lr;
+    direction: rtl;
+    -webkit-appearance: slider-vertical;
+    appearance: slider-vertical;
+    width: 26px;
+    flex: 1 1 auto;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: ns-resize;
+  }
+  .ladder input[type="range"]:disabled { cursor: not-allowed; opacity: 0.45; }
+  .ladder input[type="range"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .board-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    padding: 10px 18px 16px;
+  }
+  .board-foot {
+    padding: 10px 18px;
+    border-top: 1px solid var(--rule);
+    background: var(--surface-sunk);
+    font-size: 12px;
+    color: var(--ink-2);
+    min-height: 38px;
+  }
+
+  button {
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 13px;
+    border-radius: 4px;
+    border: 1px solid var(--ring);
+    background: var(--surface);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  button:hover { background: var(--surface-sunk); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button[aria-pressed="true"] {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  button.ghost { color: var(--ink-2); }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    align-items: center;
+    font-size: 12px;
+    color: var(--ink-2);
+    margin-left: auto;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i {
+    width: 16px;
+    height: 0;
+    border-top-width: 2px;
+    border-top-style: dashed;
+    display: inline-block;
+    flex: none;
+  }
+
+  /* -------------------------------------------------------------- tooltip */
+  .tip {
+    position: fixed;
+    z-index: 20;
+    pointer-events: none;
+    background: var(--surface);
+    color: var(--ink);
+    border: 1px solid var(--ring);
+    border-radius: 4px;
+    padding: 7px 10px;
+    font-size: 12px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.13);
+    white-space: nowrap;
+  }
+  .tip[hidden] { display: none; }
+
+  /* --------------------------------------------------------------- table */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--ring);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .panel > h2 {
+    margin: 0;
+    padding: 13px 18px;
+    font-size: 14px;
+    font-weight: 700;
+    border-bottom: 1px solid var(--rule);
+  }
+  .scroll-x { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td {
+    text-align: left;
+    padding: 8px 18px;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  th {
+    font-size: 11px;
+    color: var(--ink-muted);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.right, th.right { text-align: right; }
+  .empty { padding: 22px 18px; color: var(--ink-muted); font-size: 13px; }
+
+  .tag {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 3px;
+    border: 1px solid currentColor;
+  }
+  .tag-buy  { color: var(--buy); }
+  .tag-sell { color: var(--sell); }
+  .tag-info { color: var(--ink-muted); }
+  .tag-bad  { color: var(--bad); }
+
+  footer.note {
+    font-size: 12px;
+    color: var(--ink-muted);
+    line-height: 1.7;
+  }
+  footer.note code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    background: var(--surface-sunk);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  @media (max-width: 560px) {
+    .plot-area { padding-inline: 12px; }
+    .board-head, .board-controls, .board-foot { padding-inline: 12px; }
+    th, td { padding-inline: 12px; }
+    .legend { margin-left: 0; width: 100%; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; animation: none !important; }
+  }
+</style>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<div class="wrap">
+  <header class="masthead">
+    <div>
+      <div class="eyebrow">Kabu — 自動売買シミュレーター</div>
+      <h1>株価を動かして、ボットの動きを見る</h1>
+    </div>
+    <div class="masthead-right">
+      <span class="badge" id="engine-badge" data-live="demo">
+        <span class="dot"></span><span id="engine-text">デモモード</span>
+      </span>
+      <span class="badge num" id="clock">--:--:--</span>
+    </div>
+  </header>
+
+  <p class="safe-note">
+    <strong>お金は動きません。</strong>
+    表示されている注文と損益はすべてシミュレーションです。証券会社には一切接続していません。
+  </p>
+
+  <section class="stats" aria-label="サマリー">
+    <div class="stat">
+      <span class="label">実現損益</span>
+      <span class="value num" id="stat-realized">±0 円</span>
+      <span class="sub" id="stat-realized-sub">手数料・税金は含みません</span>
+    </div>
+    <div class="stat">
+      <span class="label">評価損益（保有中）</span>
+      <span class="value num" id="stat-unrealized">±0 円</span>
+      <span class="sub" id="stat-position">保有なし</span>
+    </div>
+    <div class="stat">
+      <span class="label">発注回数</span>
+      <span class="value num" id="stat-orders">0</span>
+      <span class="sub" id="stat-fills">約定 0 件</span>
+    </div>
+    <div class="stat">
+      <span class="label">完了サイクル</span>
+      <span class="value num" id="stat-cycles">0</span>
+      <span class="sub">買って売って 1 サイクル</span>
+    </div>
+  </section>
+
+  <div id="boards"></div>
+
+  <section class="panel">
+    <h2>売買記録</h2>
+    <div class="scroll-x">
+      <table>
+        <thead>
+          <tr>
+            <th>時刻</th>
+            <th>銘柄</th>
+            <th>できごと</th>
+            <th class="right">株数</th>
+            <th class="right">価格</th>
+            <th>内容</th>
+          </tr>
+        </thead>
+        <tbody id="events"></tbody>
+      </table>
+    </div>
+    <div class="empty" id="events-empty">
+      まだ何も起きていません。株価を買いラインまで下げると、ボットが買い注文を出します。
+    </div>
+  </section>
+
+  <footer class="note">
+    株価スライダーを上下にドラッグすると、その銘柄の株価が動きます。<code>自動</code>
+    をオンにすると株価がひとりでに揺れ続け、トリガーに触れるたびにボットが売買します。<br>
+    買いライン以下で買い、売りライン以上で売り、損切りラインを割ったら成行で撤退 — という判定です。
+  </footer>
+</div>
+
+<div class="tip" id="tip" hidden></div>
+
+<script>
+(() => {
+  "use strict";
+
+  const YEN = new Intl.NumberFormat("ja-JP");
+  const fmt = (n) => YEN.format(Math.round(n));
+  const fmtPrice = (n) => (n == null ? "—" : YEN.format(Math.round(n * 10) / 10));
+  const signed = (n) => (n > 0 ? "+" : n < 0 ? "−" : "±") + fmt(Math.abs(n));
+
+  const STATE_JA = {
+    FLAT: "待機中", BUY_PENDING: "買い注文中", HOLDING: "保有中",
+    SELL_PENDING: "売り注文中", DONE: "完了", HALTED: "停止",
+  };
+  const EVENT_JA = {
+    ORDER: "発注", FILL: "約定", BLOCKED: "見送り", HALT: "停止",
+    CANCELLED: "取消", REJECTED: "拒否", START: "開始", RESET: "リセット",
+  };
+
+  // ====================================================================
+  //  デモエンジン — サーバなしでもページ単体で遊べるようにする。
+  //  ロジックは Python 版 strategy.py の価格トリガー判定と同じ形に揃えてある。
+  // ====================================================================
+  class DemoEngine {
+    constructor() {
+      this.kind = "demo";
+      this.auto = true;
+      this.rules = [
+        { id: "toyota", symbol: "7203.T", quantity: 100,
+          buy_at: 2800, sell_at: 3000, stop_loss: 2700, max_cycles: 99 },
+        { id: "sony", symbol: "6758.T", quantity: 100,
+          buy_at: 3200, sell_at: 3500, stop_loss: null, max_cycles: 99 },
+      ];
+      this.reset();
+    }
+
+    reset() {
+      this.price = {};
+      this.rt = {};
+      this.history = {};
+      this.events = [];
+      this.orders = 0;
+      this.fills = 0;
+      this.realized = 0;
+      for (const r of this.rules) {
+        this.price[r.symbol] = (r.buy_at + r.sell_at) / 2;
+        this.history[r.symbol] = [];
+        this.rt[r.id] = { state: "FLAT", cycles_done: 0, entry_price: null, position_qty: 0, note: "" };
+      }
+      this.log("RESET", null, "シミュレーションをリセットしました");
+    }
+
+    log(event, rule, note, extra = {}) {
+      this.events.unshift(Object.assign({
+        t: Date.now(), event, rule_id: rule ? rule.id : "",
+        symbol: rule ? rule.symbol : "", side: "", quantity: "", price: "", note,
+      }, extra));
+      this.events.length = Math.min(this.events.length, 60);
+    }
+
+    setPrice(symbol, value) { this.price[symbol] = value; }
+    setAuto(flag) { this.auto = flag; }
+
+    tick() {
+      const now = Date.now();
+      for (const rule of this.rules) {
+        if (this.auto) {
+          // 中心へ緩く引き戻しながらランダムに揺らす。トリガーを跨ぐ幅にしてある。
+          const centre = (rule.buy_at + rule.sell_at) / 2;
+          const span = rule.sell_at - rule.buy_at;
+          const drift = (centre - this.price[rule.symbol]) * 0.05;
+          const shock = (Math.random() - 0.5) * span * 0.45;
+          this.price[rule.symbol] = Math.max(1, this.price[rule.symbol] + drift + shock);
+        }
+        const price = this.price[rule.symbol];
+        const hist = this.history[rule.symbol];
+        hist.push([now, price]);
+        if (hist.length > 240) hist.shift();
+        this.evaluate(rule, price);
+      }
+    }
+
+    // 買い: 現在値 <= buy_at / 売り: 現在値 >= sell_at / 損切り: <= stop_loss
+    evaluate(rule, price) {
+      const rt = this.rt[rule.id];
+      if (rt.state === "FLAT") {
+        if (rt.cycles_done >= rule.max_cycles) return;
+        // 指値は有利な側で約定する（Python 版 broker.py の _fill_price と同じ）
+        if (price <= rule.buy_at) {
+          this.fill(rule, rt, "BUY", Math.min(rule.buy_at, price), rule.quantity);
+        }
+      } else if (rt.state === "HOLDING") {
+        if (rule.stop_loss != null && price <= rule.stop_loss) {
+          this.fill(rule, rt, "SELL", price, rt.position_qty, true);
+        } else if (price >= rule.sell_at) {
+          this.fill(rule, rt, "SELL", Math.max(rule.sell_at, price), rt.position_qty);
+        }
+      }
+    }
+
+    fill(rule, rt, side, price, qty, isStop = false) {
+      const reason = side === "BUY"
+        ? `現在値が買いライン ${fmtPrice(rule.buy_at)} 以下`
+        : isStop ? `損切りライン ${fmtPrice(rule.stop_loss)} を下回った（成行）`
+                 : `現在値が売りライン ${fmtPrice(rule.sell_at)} 以上`;
+      this.orders += 1;
+      this.log("ORDER", rule, reason, { side, quantity: qty, price });
+      this.fills += 1;
+
+      if (side === "BUY") {
+        rt.state = "HOLDING";
+        rt.entry_price = price;
+        rt.position_qty = qty;
+        rt.note = `${fmtPrice(price)} 円で ${qty} 株を買いました`;
+        this.log("FILL", rule, rt.note, { side, quantity: qty, price });
+      } else {
+        const pnl = (price - rt.entry_price) * qty;
+        this.realized += pnl;
+        rt.cycles_done += 1;
+        rt.state = "FLAT";
+        rt.entry_price = null;
+        rt.position_qty = 0;
+        rt.note = `${fmtPrice(price)} 円で売却 — 損益 ${signed(pnl)} 円`;
+        this.log("FILL", rule, rt.note, { side, quantity: qty, price });
+      }
+    }
+
+    snapshot() {
+      return {
+        kind: "demo",
+        auto: this.auto,
+        now: new Date().toISOString(),
+        orders: this.orders,
+        fills: this.fills,
+        realized: this.realized,
+        events: this.events,
+        history: this.history,
+        rules: this.rules.map((r) => {
+          const rt = this.rt[r.id];
+          return {
+            id: r.id, symbol: r.symbol, quantity: r.quantity,
+            buy_at: r.buy_at, sell_at: r.sell_at, stop_loss: r.stop_loss,
+            max_cycles: r.max_cycles, cycles_done: rt.cycles_done,
+            state: rt.state, entry_price: rt.entry_price,
+            position_qty: rt.position_qty, note: rt.note,
+            price: this.price[r.symbol],
+          };
+        }),
+      };
+    }
+  }
+
+  // ====================================================================
+  //  リモートエンジン — kabu play が動かしている Python 本体につなぐ。
+  // ====================================================================
+  class RemoteEngine {
+    constructor() { this.kind = "engine"; this.last = null; }
+    async refresh() {
+      const res = await fetch("api/state", { cache: "no-store" });
+      if (!res.ok) throw new Error("state " + res.status);
+      this.last = await res.json();
+      return this.last;
+    }
+    post(path, body) {
+      return fetch("api/" + path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+    }
+    setPrice(symbol, value) { return this.post("price", { symbol, price: value }); }
+    setAuto(flag) { return this.post("auto", { auto: flag }); }
+    reset() { return this.post("reset", {}); }
+    snapshot() { return this.last; }
+  }
+
+  // ====================================================================
+  //  チャート描画
+  // ====================================================================
+  // PAD_R は右側の価格ラベル（"損切 2,700" が最長）が収まる幅を確保する。
+  const W = 640, H = 200, PAD_L = 8, PAD_R = 88, PAD_T = 10, PAD_B = 20;
+
+  function domainOf(rule) {
+    // 目盛りを固定する。株価が動くたびに軸が伸縮すると、線が動いたのか
+    // 軸が動いたのか分からなくなるため。
+    const lo = Math.min(rule.buy_at, rule.stop_loss ?? rule.buy_at);
+    const hi = rule.sell_at;
+    const span = Math.max(hi - lo, 1);
+    return [lo - span * 0.38, hi + span * 0.30];
+  }
+
+  function drawChart(svg, rule, history, hoverIdx) {
+    const [lo, hi] = domainOf(rule);
+    const plotW = W - PAD_L - PAD_R;
+    const plotH = H - PAD_T - PAD_B;
+    const y = (v) => PAD_T + plotH * (1 - (Math.min(hi, Math.max(lo, v)) - lo) / (hi - lo));
+    const n = Math.max(history.length, 2);
+    const x = (i) => PAD_L + (plotW * i) / (n - 1);
+
+    const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    const parts = [];
+
+    // 参照線（買い・売り・損切り）— 色だけに頼らず必ず直接ラベルを添える
+    const lines = [
+      { v: rule.sell_at, c: "var(--sell)", t: "売", dash: "7 4" },
+      { v: rule.buy_at, c: "var(--buy)", t: "買", dash: "7 4" },
+    ];
+    if (rule.stop_loss != null) {
+      lines.push({ v: rule.stop_loss, c: "var(--stop)", t: "損切", dash: "2 3" });
+    }
+    for (const l of lines) {
+      const yy = y(l.v);
+      parts.push(
+        `<line x1="${PAD_L}" y1="${yy.toFixed(1)}" x2="${(W - PAD_R).toFixed(1)}" y2="${yy.toFixed(1)}"
+               stroke="${l.c}" stroke-width="2" stroke-dasharray="${l.dash}" />`,
+        `<text x="${W - PAD_R + 6}" y="${(yy + 4).toFixed(1)}" fill="${l.c}"
+               font-size="11" font-weight="600"
+               font-family="'IBM Plex Mono', ui-monospace, monospace">${esc(l.t)} ${esc(fmtPrice(l.v))}</text>`
+      );
+    }
+
+    // 価格ライン（1 本しかないので色は使わずインクで引く）
+    if (history.length > 1) {
+      const d = history.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(p[1]).toFixed(1)}`).join(" ");
+      parts.push(`<path d="${d}" fill="none" stroke="var(--ink)" stroke-width="2"
+                        stroke-linejoin="round" stroke-linecap="round" />`);
+      const lastX = x(history.length - 1), lastY = y(history[history.length - 1][1]);
+      parts.push(`<circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="4.5"
+                          fill="var(--ink)" stroke="var(--surface)" stroke-width="2" />`);
+    }
+
+    // 約定マーカー（履歴に紐づく点）
+    for (const m of rule._marks || []) {
+      const i = history.findIndex((p) => p[0] >= m.t);
+      if (i < 0) continue;
+      parts.push(`<circle cx="${x(i).toFixed(1)}" cy="${y(m.price).toFixed(1)}" r="5.5"
+                          fill="${m.side === "BUY" ? "var(--buy)" : "var(--sell)"}"
+                          stroke="var(--surface)" stroke-width="2" />`);
+    }
+
+    // ホバーの十字線
+    if (hoverIdx != null && history[hoverIdx]) {
+      const hx = x(hoverIdx);
+      parts.push(
+        `<line x1="${hx.toFixed(1)}" y1="${PAD_T}" x2="${hx.toFixed(1)}" y2="${H - PAD_B}"
+               stroke="var(--axis)" stroke-width="1" />`,
+        `<circle cx="${hx.toFixed(1)}" cy="${y(history[hoverIdx][1]).toFixed(1)}" r="4"
+                 fill="var(--surface)" stroke="var(--ink)" stroke-width="2" />`
+      );
+    }
+
+    // 時間軸のベースライン
+    parts.push(`<line x1="${PAD_L}" y1="${H - PAD_B}" x2="${(W - PAD_R).toFixed(1)}" y2="${H - PAD_B}"
+                      stroke="var(--axis)" stroke-width="1" />`);
+    parts.push(`<text x="${PAD_L}" y="${H - 6}" fill="var(--ink-muted)" font-size="10">← 古い</text>`);
+    parts.push(`<text x="${(W - PAD_R).toFixed(1)}" y="${H - 6}" fill="var(--ink-muted)"
+                      font-size="10" text-anchor="end">いま</text>`);
+
+    svg.innerHTML = parts.join("");
+    svg._geom = { x, y, n, lo, hi };
+  }
+
+  // ====================================================================
+  //  画面の組み立て
+  // ====================================================================
+  const boards = document.getElementById("boards");
+  const tip = document.getElementById("tip");
+  const cards = new Map();
+  let engine = null;
+  let dragging = null;
+
+  function buildCard(rule) {
+    const el = document.createElement("section");
+    el.className = "board";
+    el.style.marginBottom = "20px";
+    const [lo, hi] = domainOf(rule);
+    el.innerHTML = `
+      <div class="board-head">
+        <span class="code num">${rule.symbol}</span>
+        <span class="rid">${rule.id} · ${rule.quantity} 株</span>
+        <span class="pill" data-role="state">待機中</span>
+        <span class="spacer"></span>
+        <span class="rid">現在値</span>
+        <span class="live-price num" data-role="price">—</span>
+      </div>
+      <div class="plot-area">
+        <div class="plot-svg-holder">
+          <svg viewBox="0 0 ${W} ${H}" role="img"
+               aria-label="${rule.symbol} の株価と売買トリガー"></svg>
+        </div>
+        <div class="ladder">
+          <span class="ladder-label">高</span>
+          <input type="range" data-role="slider"
+                 min="${lo.toFixed(1)}" max="${hi.toFixed(1)}" step="0.5"
+                 aria-label="${rule.symbol} の株価を動かす">
+          <span class="ladder-label">安</span>
+        </div>
+      </div>
+      <div class="board-controls">
+        <button type="button" data-role="down">下げる −10</button>
+        <button type="button" data-role="up">上げる +10</button>
+        <span class="legend">
+          <span><i style="border-color:var(--sell)"></i>売り ${fmtPrice(rule.sell_at)}</span>
+          <span><i style="border-color:var(--buy)"></i>買い ${fmtPrice(rule.buy_at)}</span>
+          ${rule.stop_loss != null
+            ? `<span><i style="border-color:var(--stop);border-top-style:dotted"></i>損切 ${fmtPrice(rule.stop_loss)}</span>`
+            : ""}
+        </span>
+      </div>
+      <div class="board-foot" data-role="note">株価を買いラインまで下げてみてください。</div>
+    `;
+    boards.appendChild(el);
+
+    const svg = el.querySelector("svg");
+    const slider = el.querySelector('[data-role="slider"]');
+
+    const nudge = (delta) => {
+      const next = Number(slider.value) + delta;
+      slider.value = String(next);
+      engine.setPrice(rule.symbol, Number(slider.value));
+    };
+    el.querySelector('[data-role="up"]').addEventListener("click", () => nudge(10));
+    el.querySelector('[data-role="down"]').addEventListener("click", () => nudge(-10));
+
+    slider.addEventListener("pointerdown", () => { dragging = rule.symbol; });
+    slider.addEventListener("input", () => {
+      dragging = rule.symbol;
+      engine.setPrice(rule.symbol, Number(slider.value));
+    });
+    const release = () => { if (dragging === rule.symbol) dragging = null; };
+    slider.addEventListener("pointerup", release);
+    slider.addEventListener("pointercancel", release);
+    slider.addEventListener("blur", release);
+
+    svg.addEventListener("pointermove", (ev) => {
+      const card = cards.get(rule.id);
+      const hist = card.history || [];
+      if (!hist.length || !svg._geom) return;
+      const box = svg.getBoundingClientRect();
+      const rel = ((ev.clientX - box.left) / box.width) * W;
+      const frac = (rel - PAD_L) / (W - PAD_L - PAD_R);
+      const idx = Math.max(0, Math.min(hist.length - 1, Math.round(frac * (hist.length - 1))));
+      card.hover = idx;
+      const point = hist[idx];
+      tip.hidden = false;
+      tip.innerHTML =
+        `<strong class="num">${fmtPrice(point[1])} 円</strong><br>` +
+        `<span style="color:var(--ink-2)">${new Date(point[0]).toLocaleTimeString("ja-JP")}</span>`;
+      tip.style.left = Math.min(window.innerWidth - 130, ev.clientX + 14) + "px";
+      tip.style.top = Math.max(8, ev.clientY - 52) + "px";
+      drawChart(svg, card.rule, hist, idx);
+    });
+    svg.addEventListener("pointerleave", () => {
+      const card = cards.get(rule.id);
+      tip.hidden = true;
+      card.hover = null;
+      drawChart(svg, card.rule, card.history || [], null);
+    });
+
+    return { el, svg, slider, rule, history: [], hover: null };
+  }
+
+  function render(snap) {
+    if (!snap) return;
+
+    document.getElementById("clock").textContent =
+      new Date(snap.now).toLocaleTimeString("ja-JP");
+    const badge = document.getElementById("engine-badge");
+    badge.dataset.live = snap.kind;
+    document.getElementById("engine-text").textContent =
+      snap.kind === "engine" ? "Python エンジン接続中" : "デモモード（ブラウザ内）";
+
+    // マーカーは約定イベントから引く
+    const marks = {};
+    for (const ev of snap.events) {
+      if (ev.event !== "FILL") continue;
+      (marks[ev.rule_id] ||= []).push({ t: ev.t, price: Number(ev.price), side: ev.side });
+    }
+
+    let unrealized = 0, held = 0, cycles = 0;
+    for (const rule of snap.rules) {
+      let card = cards.get(rule.id);
+      if (!card) { card = buildCard(rule); cards.set(rule.id, card); }
+      card.rule = Object.assign({}, rule, { _marks: marks[rule.id] || [] });
+      card.history = (snap.history[rule.symbol] || []).slice();
+
+      const pill = card.el.querySelector('[data-role="state"]');
+      pill.textContent = STATE_JA[rule.state] || rule.state;
+      pill.dataset.state = rule.state;
+      card.el.querySelector('[data-role="price"]').textContent = fmtPrice(rule.price) + " 円";
+
+      const cyc = `サイクル ${rule.cycles_done}/${rule.max_cycles >= 99 ? "∞" : rule.max_cycles}`;
+      card.el.querySelector('[data-role="note"]').textContent =
+        (rule.note ? rule.note + " · " : "") + cyc;
+
+      if (dragging !== rule.symbol) card.slider.value = String(rule.price);
+      card.slider.disabled = !!snap.auto;
+
+      if (rule.position_qty && rule.entry_price) {
+        unrealized += (rule.price - rule.entry_price) * rule.position_qty;
+        held += rule.position_qty;
+      }
+      cycles += rule.cycles_done;
+
+      drawChart(card.svg, card.rule, card.history, card.hover);
+    }
+
+    const setSigned = (id, v) => {
+      const node = document.getElementById(id);
+      node.textContent = signed(v) + " 円";
+      node.className = "value num " + (v > 0 ? "pos" : v < 0 ? "neg" : "");
+    };
+    setSigned("stat-realized", snap.realized);
+    setSigned("stat-unrealized", unrealized);
+    document.getElementById("stat-position").textContent =
+      held ? `${fmt(held)} 株を保有中` : "保有なし";
+    document.getElementById("stat-orders").textContent = fmt(snap.orders);
+    document.getElementById("stat-fills").textContent = `約定 ${fmt(snap.fills)} 件`;
+    document.getElementById("stat-cycles").textContent = fmt(cycles);
+
+    const rows = snap.events.filter((e) => e.event !== "RESET" && e.event !== "START");
+    const tbody = document.getElementById("events");
+    document.getElementById("events-empty").hidden = rows.length > 0;
+    tbody.innerHTML = rows.slice(0, 40).map((e) => {
+      const cls = e.event === "FILL" ? (e.side === "BUY" ? "tag-buy" : "tag-sell")
+                : e.event === "HALT" || e.event === "REJECTED" ? "tag-bad" : "tag-info";
+      const label = (EVENT_JA[e.event] || e.event) +
+                    (e.side ? `・${e.side === "BUY" ? "買い" : "売り"}` : "");
+      return `<tr>
+        <td class="num">${new Date(e.t).toLocaleTimeString("ja-JP")}</td>
+        <td class="num">${e.symbol || "—"}</td>
+        <td><span class="tag ${cls}">${label}</span></td>
+        <td class="right num">${e.quantity ? fmt(e.quantity) : "—"}</td>
+        <td class="right num">${e.price ? fmtPrice(Number(e.price)) : "—"}</td>
+        <td style="white-space:normal;color:var(--ink-2)">${e.note || ""}</td>
+      </tr>`;
+    }).join("");
+  }
+
+  // ------------------------------------------------------------------ 起動
+  const autoBtn = document.createElement("button");
+  const resetBtn = document.createElement("button");
+  autoBtn.type = resetBtn.type = "button";
+  autoBtn.textContent = "自動で株価を動かす";
+  resetBtn.textContent = "リセット";
+  resetBtn.className = "ghost";
+  document.querySelector(".masthead-right").prepend(resetBtn, autoBtn);
+
+  function setAutoUI(on) {
+    autoBtn.setAttribute("aria-pressed", on ? "true" : "false");
+    autoBtn.textContent = on ? "自動: オン" : "自動で株価を動かす";
+  }
+
+  async function boot() {
+    const remote = new RemoteEngine();
+    try {
+      await remote.refresh();
+      engine = remote;
+      setAutoUI(remote.last.auto);
+      render(remote.last);
+      autoBtn.addEventListener("click", async () => {
+        const next = autoBtn.getAttribute("aria-pressed") !== "true";
+        setAutoUI(next);
+        await remote.setAuto(next);
+      });
+      resetBtn.addEventListener("click", async () => { await remote.reset(); });
+      setInterval(async () => {
+        try { render(await remote.refresh()); } catch (_) { /* 次の周回で復帰 */ }
+      }, 1000);
+      return;
+    } catch (_) {
+      // サーバがいない = 単体のページとして開かれている。ブラウザ内で回す。
+    }
+
+    const demo = new DemoEngine();
+    engine = demo;
+    setAutoUI(demo.auto);
+    autoBtn.addEventListener("click", () => {
+      demo.setAuto(demo.auto !== true);
+      setAutoUI(demo.auto);
+      render(demo.snapshot());
+    });
+    resetBtn.addEventListener("click", () => {
+      cards.forEach((c) => c.el.remove());
+      cards.clear();
+      demo.reset();
+      render(demo.snapshot());
+    });
+    demo.tick();
+    render(demo.snapshot());
+    setInterval(() => { demo.tick(); render(demo.snapshot()); }, 1000);
+  }
+
+  boot();
+})();
+</script>

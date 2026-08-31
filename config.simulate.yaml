@@ -1,0 +1,43 @@
+# ------------------------------------------------------------------------------
+# シミュレーション専用の設定。
+#   kabu play -c config.simulate.yaml
+# 証券会社には一切接続しません。株価も注文も損益もすべて架空のものです。
+# ------------------------------------------------------------------------------
+mode: paper
+poll_interval_sec: 1
+
+state_file: play_state.json
+journal_file: play_journal.csv
+log_file: logs/play.log
+
+risk:
+  max_orders_per_day: 500        # 遊ぶだけなので上限は緩めに
+  max_notional_per_order: 5000000
+  max_notional_per_day: 100000000
+  # 0 にしないのは意図的。ルールの組み方によっては「買った瞬間に損切り」を
+  # 延々と繰り返す形になり得るので、連射防止が働くところを画面で見せる。
+  min_seconds_between_orders: 3
+  max_price_deviation_pct: 100   # スライダーで大きく動かしても弾かれないように
+  quote_max_age_sec: 3600
+  pending_timeout_sec: 86400
+  kill_switch_file: STOP
+
+rules:
+  - id: toyota
+    symbol: "7203.T"
+    quantity: 100
+    buy_at: 2800        # ここまで下がったら買う
+    sell_at: 3000       # ここまで上がったら売る
+    stop_loss: 2700     # ここを割ったら成行で撤退
+    order_type: limit
+    max_cycles: 99      # 何度でも繰り返す
+    enabled: true
+
+  - id: sony
+    symbol: "6758.T"
+    quantity: 100
+    buy_at: 3200
+    sell_at: 3500
+    order_type: limit
+    max_cycles: 99
+    enabled: true

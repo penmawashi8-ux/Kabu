@@ -34,6 +34,35 @@
 - 発注の上限や連射防止など、**自前の安全弁を挟みたい**
 - 将来もっと複雑な条件（指標・時間帯・板情報）に**育てていきたい**
 
+## まずシミュレーションから
+
+楽天証券の口座も Excel も無しで、いきなり動きを見られます。**証券会社には一切接続しません。**
+
+```powershell
+git clone https://github.com/penmawashi8-ux/Kabu.git
+cd Kabu
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+
+kabu play -c config.simulate.yaml
+```
+
+ブラウザで `http://127.0.0.1:8765/` を開くと、株価チャートと売買トリガーの線が出ます。
+
+- **右端のスライダーを上下にドラッグ** すると株価が動きます。買いラインを割ると、その場でボットが買い注文を出します
+- **「自動」ボタン** を押すと株価がひとりでに揺れ続け、放っておくと売買が繰り返されます
+- 売買記録には「なぜその注文を出したか」「なぜ見送ったか」が 1 行ずつ残ります
+
+画面に出ているのは飾りではありません。実弾モードで動くのと**同じ売買ロジック**（`strategy.py` と `risk.py`）を回していて、発注先だけが `PaperBroker` に差し替わっています。
+
+ルールを変えて試すには `config.simulate.yaml` の `rules:` を編集して、再起動してください。
+
+| オプション | 意味 |
+|---|---|
+| `--port 8765` | 待ち受けポート |
+| `--market-hours` | 立会時間内でしか動かさない（既定はいつでも動く） |
+
 ## セットアップ
 
 ### 1. 楽天証券側
@@ -95,6 +124,7 @@ kabu doctor              # 設定・立会時間・Excel 接続・株価取得�
 ## 使い方
 
 ```powershell
+kabu play                # ブラウザで動きが見えるシミュレーター
 kabu run                 # 売買ループを開始
 kabu status              # 現在の保有・サイクル状況を表示
 ```
@@ -158,6 +188,8 @@ New-Item STOP            # STOP という名前のファイルを作るだけ
 ```
 src/kabu/
   cli.py           コマンドライン入口
+  webui.py         kabu play のサーバ（本物の Runner を回して状態を JSON で配る）
+  dashboard.html   シミュレーター画面（単体で開けばブラウザ内デモとしても動く）
   runner.py        売買ループ本体（取得 → 約定確認 → 判定 → 発注）
   strategy.py      価格トリガーの判定（純関数・副作用なし）
   risk.py          安全弁
@@ -174,7 +206,7 @@ src/kabu/
 本番と同じコードパスをテストで検証できます。
 
 ```powershell
-pytest                   # 57 件。Windows / Mac / Linux いずれでも実行できます
+pytest                   # 63 件。Windows / Mac / Linux いずれでも実行できます
 ```
 
 ## RSS の関数名について

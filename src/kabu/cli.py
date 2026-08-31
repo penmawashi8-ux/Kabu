@@ -114,6 +114,38 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_play(args: argparse.Namespace) -> int:
+    """ブラウザで見えるシミュレーター。実弾モードの設定でも必ず paper に落とす。"""
+    from dataclasses import replace
+    from datetime import time as dtime
+
+    from .webui import serve
+
+    config = load_config(args.config)
+    setup_logging(config.log_file, verbose=args.verbose, timezone=config.market.timezone)
+
+    # シミュレーターは時間帯に関係なく遊べるようにする（実弾では絶対にしない）。
+    market = config.market
+    if args.anytime:
+        market = replace(
+            market,
+            sessions=((dtime(0, 0), dtime(23, 59)),),
+            trade_cutoff=dtime(23, 58),
+            close_positions_at=None,
+            holidays=(),
+        )
+
+    config = replace(
+        config,
+        mode="paper",
+        market=market,
+        state_file=args.state,
+        journal_file=args.journal,
+    )
+    serve(config, host=args.host, port=args.port)
+    return 0
+
+
 def cmd_init_sheet(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     from .sheet_template import write_template
@@ -134,6 +166,15 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="売買ループを開始する")
     run.add_argument("--yes", action="store_true", help="実弾モードの確認プロンプトを省略する")
     run.set_defaults(func=cmd_run)
+
+    play = sub.add_parser("play", help="ブラウザで動きが見えるシミュレーターを開く")
+    play.add_argument("--port", type=int, default=8765, help="待ち受けポート (既定: 8765)")
+    play.add_argument("--host", default="127.0.0.1", help="待ち受けアドレス (既定: 127.0.0.1)")
+    play.add_argument("--market-hours", dest="anytime", action="store_false",
+                      help="立会時間内でしか動かさない（既定はいつでも動く）")
+    play.add_argument("--state", default="play_state.json", help="シミュレーション用の状態ファイル")
+    play.add_argument("--journal", default="play_journal.csv", help="シミュレーション用の記録ファイル")
+    play.set_defaults(func=cmd_play, anytime=True)
 
     sub.add_parser("status", help="現在の状態を表示する").set_defaults(func=cmd_status)
     sub.add_parser("doctor", help="接続と設定を診断する").set_defaults(func=cmd_doctor)

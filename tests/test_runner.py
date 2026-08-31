@@ -49,7 +49,7 @@ def test_full_buy_then_sell_cycle(config_factory):
     runtime = runner.state.rule("r1")
     assert runtime.state is RuleState.HOLDING
     assert runtime.position_qty == 100
-    assert runtime.entry_price == 2800
+    assert runtime.entry_price == 2795   # 指値 2800 だが板は 2795 なので有利な側で約定
 
     # 売りトリガーに到達
     feed.price = 3050
@@ -170,7 +170,7 @@ def test_state_survives_restart(config_factory):
     runtime = revived.state.rule("r1")
     assert runtime.state is RuleState.HOLDING
     assert runtime.position_qty == 100
-    assert runtime.entry_price == 2800
+    assert runtime.entry_price == 2795
 
 
 def test_stuck_order_halts_the_rule(config_factory):

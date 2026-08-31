@@ -30,6 +30,16 @@ class Broker(ABC):
         pass
 
 
+def _fill_price(side: Side, limit: float, market: float) -> float:
+    """指値が市場価格を跨いだときの約定値段。
+
+    実際の板では有利なほうで約定する（2,800 円の買い指値は、板が 2,690 円なら
+    2,690 円で約定する）。指値そのもので約定させると、下振れした瞬間に必ず
+    高値掴みしたことになり、損益がシミュレーションのたびに実際より悪く出る。
+    """
+    return min(limit, market) if side is Side.BUY else max(limit, market)
+
+
 class PaperBroker(Broker):
     """約定シミュレータ。
 
@@ -92,7 +102,7 @@ class PaperBroker(Broker):
                 self._orders[order_id] = replace(
                     order,
                     filled_quantity=order.quantity,
-                    avg_price=limit,
+                    avg_price=_fill_price(order.side, limit, price),
                     status=OrderStatus.FILLED,
                 )
                 self._pending_prices.pop(order_id, None)
