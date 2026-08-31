@@ -83,3 +83,35 @@ def test_sell_uses_actual_position_size():
     intent = decide(make_rule(), runtime, quote(3100), allow_entry=True)
     assert intent is not None
     assert intent.quantity == 200
+
+
+def test_does_not_buy_below_the_stop_loss_line():
+    """買いラインと同時に損切りラインも割っている値段では買わない。
+
+    買った瞬間に損切りが発動して即撤退となり、それを繰り返すと手数料だけが
+    出ていく（ギャップダウンした朝に起きる）。
+    """
+    rule = make_rule(buy_at=2800.0, sell_at=3000.0, stop_loss=2700.0)
+    runtime = RuleRuntimeState()
+
+    intent = decide(rule, runtime, quote(2650.0), allow_entry=True)
+
+    assert intent is None
+
+
+def test_buys_between_the_buy_line_and_the_stop_line():
+    """損切りラインより上なら、これまでどおり買う。"""
+    rule = make_rule(buy_at=2800.0, sell_at=3000.0, stop_loss=2700.0)
+    runtime = RuleRuntimeState()
+
+    intent = decide(rule, runtime, quote(2750.0), allow_entry=True)
+
+    assert intent is not None
+    assert intent.side is Side.BUY
+
+
+def test_still_buys_when_no_stop_loss_is_set():
+    rule = make_rule(buy_at=2800.0, sell_at=3000.0, stop_loss=None)
+    runtime = RuleRuntimeState()
+
+    assert decide(rule, runtime, quote(1000.0), allow_entry=True) is not None
