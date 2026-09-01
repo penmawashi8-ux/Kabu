@@ -67,6 +67,18 @@ class Outcome:
         """期間全体の損益率（複利ではなく、投下額に対する単純合計）。"""
         return sum(p.return_pct for p in self.positions)
 
+    def net_return_pct(self, *, tax_pct: float = 20.315, slippage_pct: float = 0.05) -> float:
+        """税金と滑りを引いた後の損益率。
+
+        滑りは 1 回の売買につき買いと売りの 2 回分を引く。
+        税金は特定口座に合わせ、同じ期間の損と益を通算した後の利益にだけかける
+        （負けた年に課税されることはない）。売買が多い手法ほど不利に出るが、
+        それが実際に起きることなので、比較はこの数字で行うべき。
+        """
+        nets = [p.return_pct - slippage_pct * 2 for p in self.positions if p.exit_price is not None]
+        total = sum(nets)
+        return total * (1 - tax_pct / 100) if total > 0 else total
+
     @property
     def max_drawdown_pct(self) -> float:
         """評価額の山からの最大下落率。「どれだけ含み損に耐える必要があったか」。"""
@@ -319,6 +331,19 @@ STRATEGIES = (buy_and_hold, fixed_band, sma_trend, rsi_reversion, atr_band, trai
 def compare(bars: list[Bar]) -> list[Outcome]:
     """全手法を同じ期間で回して結果を並べる。"""
     return [strategy(bars) for strategy in STRATEGIES]
+
+
+def split_periods(bars: list[Bar], count: int) -> list[list[Bar]]:
+    """期間を count 等分する。
+
+    1 つの期間の成績だけでは、その相場つきに合っていただけなのか、
+    どんな相場でも通用するのかが分からない。上げ相場・下げ相場を
+    またいで見るために、期間を割って別々に測る。
+    """
+    if count <= 1 or len(bars) < count:
+        return [bars]
+    size = len(bars) // count
+    return [bars[i * size:(i + 1) * size] for i in range(count)]
 
 
 def summarize(outcomes: list[Outcome]) -> dict[str, float]:

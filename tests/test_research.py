@@ -109,3 +109,39 @@ def test_compare_runs_every_strategy():
     outcomes = compare(bars)
     assert len(outcomes) == 6
     assert len({o.name for o in outcomes}) == 6
+
+
+# ------------------------------------------------------------ 税金と滑り
+
+def test_costs_are_taken_off_every_round_trip():
+    """滑りは 1 往復につき 2 回ぶん（買いと売り）引く。"""
+    outcome = buy_and_hold(_bars([100, 100, 110]))
+    gross = outcome.return_pct
+    net = outcome.net_return_pct(tax_pct=0.0, slippage_pct=0.5)
+    assert abs((gross - net) - 1.0) < 1e-9
+
+
+def test_tax_applies_only_to_a_profit():
+    profit = buy_and_hold(_bars([100, 100, 200]))
+    assert profit.net_return_pct(tax_pct=20.0, slippage_pct=0.0) == pytest_approx(80.0)
+
+    loss = buy_and_hold(_bars([100, 100, 50]))
+    # 負けたときに税金は取られない（そのままの損失）。
+    assert loss.net_return_pct(tax_pct=20.0, slippage_pct=0.0) == pytest_approx(-50.0)
+
+
+def test_frequent_trading_pays_more_slippage():
+    """売買回数が多い手法ほど滑りで不利になること。"""
+    choppy = _bars([100, 90, 110, 90, 110, 90, 110, 90, 110])
+    active = fixed_band(choppy, buy_pct=-5.0, sell_pct=5.0, stop_pct=-30.0)
+    assert active.trades >= 2
+    gross = active.return_pct
+    net = active.net_return_pct(tax_pct=0.0, slippage_pct=0.5)
+    assert gross - net == pytest_approx(active.trades * 1.0)
+
+
+def pytest_approx(value, tol=1e-6):
+    class _Approx:
+        def __eq__(self, other): return abs(other - value) < tol
+        def __repr__(self): return f"≈{value}"
+    return _Approx()
