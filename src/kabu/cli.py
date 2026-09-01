@@ -8,6 +8,7 @@
     kabu optimize    過去データから良かった値幅設定を総当たりで探す
     kabu compare     売買手法そのもの（トレンド追随・逆張り等）を比べる
     kabu validate    その手法の優位が本物か、感度・対照実験・期間別で確かめる
+    kabu portfolio   複数銘柄を同時に持つ場合（分散）を検証する
 """
 
 from __future__ import annotations
@@ -831,6 +832,97 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_portfolio(args: argparse.Namespace) -> int:
+    """複数銘柄を同時に持つ場合を検証する（発注しない）。
+
+    これまでの検証は 1 銘柄ずつの話だった。ここでは分散の効果を見る。
+    """
+    from .portfolio import equal_weight_index, run_portfolio, single_stock_median
+
+    config = load_config(args.config)
+    setup_logging(config.log_file, verbose=args.verbose, timezone=config.market.timezone)
+    quiet_analysis(args.verbose)
+
+    symbols = _resolve_symbols(config, args)
+    bars = _fetch_with_fallback(symbols, args)
+    if bars is None:
+        return 1
+    if args.days:
+        bars = {s: v[-args.days:] for s, v in bars.items()}
+    bars = {s: v for s, v in bars.items() if len(v) > args.lookback + 40}
+    if not bars:
+        print("\n検証できる銘柄がありませんでした（履歴が足りません）。")
+        return 1
+
+    days = min(len(v) for v in bars.values())
+    print(f"\n{len(bars)} 銘柄 × 約 {days} 営業日 / 資金 {args.capital:,.0f} 円"
+          f"（税金 {args.tax:g}% と滑り {args.slippage:g}%/回 を引いた後）")
+
+    plans = [
+        ("equal", args.hold),
+        ("momentum", args.hold),
+        ("momentum", max(1, args.hold * 2)),
+    ]
+    results = [
+        run_portfolio(
+            bars, capital=args.capital, hold=hold, rebalance_days=args.rebalance,
+            select=select, lookback=args.lookback,
+            tax_pct=args.tax, slippage_pct=args.slippage,
+        )
+        for select, hold in plans
+    ]
+
+    print(f"\n{'=' * 78}")
+    print("■ 組み方ごとの成績")
+    print(f"{'-' * 78}")
+    print(_pad("組み方", 40) + _rpad("損益", 9) + _rpad("最大下落", 10)
+          + _rpad("平均銘柄数", 12) + _rpad("入替", 7))
+    for result in results:
+        if not result.equity:
+            print(_pad(result.name, 40) + "  履歴が足りず評価できません")
+            continue
+        print(_pad(result.name, 40)
+              + f"{result.return_pct:>+8.1f}%{result.max_drawdown_pct:>9.1f}%"
+              + f"{result.average_names:>10.1f}{result.rebalances:>6}回")
+
+    baseline = single_stock_median(bars, tax_pct=args.tax, slippage_pct=args.slippage)
+    index_return, index_drawdown = equal_weight_index(bars, tax_pct=args.tax)
+    print(f"\n{'-' * 78}")
+    print("  比較の基準")
+    print(f"    1 銘柄を持ちっぱなし（中央値）        : {baseline:+.1f}%")
+    print(f"    全 {len(bars)} 銘柄を等ウェイトで持ちっぱなし : "
+          f"{index_return:+.1f}%   最大下落 {index_drawdown:.1f}%")
+    print("    ※ 後者が「分散だけ」を効かせた基準です。単元株の制約は入れていないので、")
+    print("       実際にはこの通りには組めません（指数に投資する代わりの目安）。")
+
+    best = max((r for r in results if r.equity), key=lambda r: r.return_pct, default=None)
+    if best:
+        print(f"\n  一番良かった組み方: {best.name}（{best.return_pct:+.1f}%）")
+        if best.return_pct <= index_return:
+            print("  → 全銘柄等ウェイトに勝てていません。**選び方や入れ替えに意味はなく、")
+            print("     効いていたのは分散だけ**、という結果です。")
+        elif best.return_pct <= baseline:
+            print("  → 1 銘柄持ちっぱなしの中央値にも勝てていません。")
+        else:
+            print("  → 両方の基準を上回りました。ただし 1 期間の結果にすぎません。")
+
+    if any(r.skipped_capital for r in results):
+        print(f"\n  ※ 資金 {args.capital:,.0f} 円では買えなかった銘柄があります。")
+        print("     単元株（100 株）単位でしか買えないためです。分散したいなら")
+        print("     資金を増やすか、単元未満株の扱いがある証券会社の仕組みを検討してください。")
+
+    print(f"\n{'=' * 78}")
+    print("読み方")
+    print(f"{'-' * 78}")
+    print("  * 分散の効果は「損益」より「最大下落」に出ます。損益が同じで下落が")
+    print("    小さいなら、それは改善です（同じ利益をより小さいブレで得ている）。")
+    print("  * 入れ替えのたびに利益が確定して課税されます。回数が多い組み方ほど不利です。")
+    print("  * 判断は当日の終値まで、約定は翌日の寄り付き。未来を覗いていません。")
+    print("  * 単元株の制約を入れてあります。資金が小さいほど銘柄数は増やせません。")
+    print("  * 過去に良かった組み方が、これから良いとは限りません。")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kabu", description="楽天証券 RSS 自動売買ボット")
     parser.add_argument("-c", "--config", default="config.yaml", help="設定ファイル (既定: config.yaml)")
@@ -931,6 +1023,23 @@ def build_parser() -> argparse.ArgumentParser:
                      help="株価データの取得元 (既定: yahoo)")
     val.add_argument("--cache-dir", default=".kabu_cache", help="取得したデータの保存先")
     val.set_defaults(func=cmd_validate)
+
+    pf = sub.add_parser("portfolio", help="複数銘柄を同時に持つ場合を検証する")
+    _add_symbol_options(pf)
+    pf.add_argument("--capital", type=float, default=1_000_000, help="資金 (既定: 100 万円)")
+    pf.add_argument("--hold", type=int, default=5, help="同時に持つ銘柄数 (既定: 5)")
+    pf.add_argument("--rebalance", type=int, default=20,
+                    help="何営業日ごとに入れ替えるか (既定: 20)")
+    pf.add_argument("--lookback", type=int, default=120,
+                    help="モメンタムを測る期間 (既定: 120 営業日)")
+    pf.add_argument("--days", type=int, default=0, help="直近何営業日ぶんで見るか (既定: 全期間)")
+    pf.add_argument("--tax", type=float, default=20.315, help="利益にかかる税率%% (既定: 20.315)")
+    pf.add_argument("--slippage", type=float, default=0.05, help="1 回の売買で滑る%% (既定: 0.05)")
+    pf.add_argument("--years", type=int, default=10, help="何年ぶんのデータを取るか (既定: 10)")
+    pf.add_argument("--provider", choices=("stooq", "yahoo"), default="yahoo",
+                    help="株価データの取得元 (既定: yahoo)")
+    pf.add_argument("--cache-dir", default=".kabu_cache", help="取得したデータの保存先")
+    pf.set_defaults(func=cmd_portfolio)
 
     sub.add_parser("status", help="現在の状態を表示する").set_defaults(func=cmd_status)
     sub.add_parser("doctor", help="接続と設定を診断する").set_defaults(func=cmd_doctor)
