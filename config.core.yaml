@@ -1,0 +1,157 @@
+# ------------------------------------------------------------------------------
+# コア用の設定（買って持つ枠）
+#
+#   kabu play -c config.core.yaml --source delayed     ← まずこれで動きを見る
+#
+# config.yaml（サテライト = 往復売買）とは役割が別なので、設定ファイルを分けています。
+# 違いは README の「コアとサテライト」を参照してください。ひとことで言うと:
+#
+#   このファイル      買ったら持ち続ける。売らない。NISA 向き
+#   config.yaml       値幅を往復して稼ぐ。損切りする。特定口座向き
+#
+# 資金 10 万円を想定した配分です。金額が変わったら quantity を計算し直してください。
+#
+#   現金                     30%   30,000 円   ← 何も買わない枠。下げ相場の緩衝材
+#   1657 先進国株(除く日本)   40%   40,000 円
+#   1487 米国債7-10年ヘッジ有  30%   30,000 円
+#
+# 現金 30% は「余ったお金」ではなく配分の一部です。ここを削ると下落時の目減りが
+# そのまま大きくなります。減らしたくなったときこそ触らないでください。
+# ------------------------------------------------------------------------------
+
+mode: paper           # 実弾に進めるときだけ live に変える
+
+# コアは 1 日に何度も判定する必要がありません。長めで十分です。
+poll_interval_sec: 30
+
+# サテライト（config.yaml）と同時に動かしても記録が混ざらないよう、
+# state / journal / log は別名にしています。ここは変えないこと。
+state_file: core_state.json
+journal_file: core_journal.csv
+log_file: logs/core.log
+
+excel:
+  workbook: C:/kabu/quotes.xlsx
+  # サテライトと同じブックを使う場合、シート名は必ず分けてください。
+  # 同名だと両方が同じシートを奪い合って壊れます。
+  quote_sheet: QUOTES_CORE
+  order_sheet: ORDERS_CORE
+  visible: true
+
+rss:
+  quote_function: RssMarket
+  price_field: 現在値
+  time_field: 現在値時刻
+
+  order_columns:
+    order_id: 注文番号
+    symbol: 銘柄コード
+    side: 売買区分
+    quantity: 注文数量
+    filled_quantity: 約定数量
+    avg_price: 約定単価
+    status: 状態
+
+  order:
+    # 発注関数の書式は config.example.yaml と同じ注意書きが当てはまります。
+    # 実弾に進む前に必ず公式の関数一覧 PDF で確認してください。
+    function: RssStockOrder
+    cancel_function: RssCancelOrder
+    arg_order:
+      - order_id
+      - order_trigger
+      - symbol
+      - side
+      - order_kind
+      - sor
+      - quantity
+      - price_kind
+      - price
+      - condition
+      - expiry
+      - account_type
+    defaults:
+      order_id: 1
+      order_trigger: 1
+      order_kind: 0
+      sor: 0
+      condition: 1
+      expiry: ""
+      # ここがサテライトとの一番の違いです。
+      # コアは「買って持ち続ける」枠なので、NISA の非課税が素直に効きます。
+      # 往復売買しないので枠を食い潰さず、損切りしないので損益通算もできなくて構わない。
+      #
+      # 実際のコード値は楽天証券の関数マニュアルで確認してください。
+      # 0 = 特定 のまま実弾に進めても動きますが、その場合は利益に約 20.315% 課税されます。
+      account_type: 0     # ← NISA 成長投資枠のコード値に置き換える
+
+  password_env: KABU_TRADE_PASSWORD
+
+risk:
+  # コアの上限は「配分を守れる範囲」で決めます。増やす理由が出てきたら、
+  # それは配分を変えたいということなので、まず上の配分表を書き直してください。
+  max_orders_per_day: 4           # 1 日に何度も買い直す枠ではない
+  max_notional_per_order: 50000   # 資金 10 万に対して 1 回 5 万まで
+  max_notional_per_day: 100000    # 1 日で全額を使い切る以上は出させない
+  min_seconds_between_orders: 60
+  max_price_deviation_pct: 10
+  quote_max_age_sec: 120
+  pending_timeout_sec: 900        # ETF は板が薄く、指値がすぐ通らないことがある
+  kill_switch_file: STOP          # サテライトと共通。1 つ作れば両方止まる
+
+market:
+  timezone: Asia/Tokyo
+  # 寄り直後と引け際は板が薄く、指値が不利な値段で通りやすい時間帯です。
+  # ETF は個別株よりこれが効くので、前後を削った時間帯だけ動かします。
+  sessions:
+    - ["09:10", "11:30"]
+    - ["12:30", "15:20"]
+  trade_cutoff: "15:10"
+  holidays:
+    - "2026-01-01"
+    - "2026-01-02"
+    - "2026-01-03"
+
+# ------------------------------------------------------------------------------
+# 買い付けルール
+#
+# ★ 下の buy_at / quantity は仮の値です。そのまま実弾に使わないでください。
+#
+# 埋め方:
+#   1. kabu play -c config.core.yaml --source delayed
+#      → 画面に 1657 と 1487 の「実際の現在値（20 分遅延）」が出ます
+#   2. quantity = 配分金額 ÷ 現在値 を、売買単位の倍数に切り下げる
+#      例) 1657 が 3,200 円なら 40,000 ÷ 3,200 = 12.5 → 12 株
+#   3. buy_at = 現在値のやや下（-1% 程度）。慌てて高値を掴まないための指値です
+#
+# sell_at について:
+#   コアは売らない枠なので、実質的に発動しない値段を置いています。
+#   このボットの売買ルールは「買い」と「売り」を対で書く形なので、
+#   売り側を空欄にはできません。届かない値段を置くことで「売らない」を表現しています。
+#   利益確定したくなったら、この数字を下げるのではなく、まず配分表を見直してください。
+#
+# stop_loss は意図的に書いていません。
+#   コアの下落は損切りする対象ではなく、現金 30% で受け止める前提です。
+#   長期保有の枠で損切りを入れると、下がったところで売って上げを取り逃します。
+# ------------------------------------------------------------------------------
+rules:
+  - id: core-world-equity
+    symbol: "1657.T"    # iシェアーズ・コア MSCI 先進国株式(除く日本) ETF
+    quantity: 12        # ★仮。40,000 円ぶんに直すこと
+    buy_at: 3200        # ★仮。現在値の -1% 程度に直すこと
+    sell_at: 999999     # 売らない（上のコメント参照）
+    order_type: limit   # ETF は成行禁止。板が薄い日に滑ります
+    max_cycles: 1       # 1 回買ったら終わり。往復しない
+    enabled: true
+
+  - id: core-us-treasury-hedged
+    symbol: "1487.T"    # iシェアーズ・コア 米国債7-10年 ETF(為替ヘッジあり)
+    quantity: 13        # ★仮。30,000 円ぶんに直すこと
+    buy_at: 2300        # ★仮
+    sell_at: 999999     # 売らない
+    order_type: limit
+    max_cycles: 1
+    enabled: true
+
+# 金(1540)・国内株(1306)は資金が増えてから足してください。
+# 10 万円だと 1 単元の比重が大きすぎて、配分が崩れます。

@@ -51,20 +51,48 @@ def _build_broker_and_quotes(config: Config) -> tuple[Broker, object]:
         return PaperBroker(), SimulatedFeed(config).read_quotes
 
 
+def _rotating_rules(config: Config) -> list[str]:
+    """往復売買・損切りをするルールの id を返す。
+
+    NISA と相性が悪いのは「繰り返し買い直すこと」と「損切りすること」であって、
+    NISA 口座そのものではない。判定基準をこの 2 つに絞る:
+
+        max_cycles > 1   何度も往復する → 買うたびに非課税枠を食う
+        stop_loss あり   損切りする     → NISA では損益通算・繰越控除ができない
+
+    どちらも無いルール（買って持ち続けるだけ）は、むしろ NISA の本来の使い道。
+    無効化されたルールは実際には発注しないので数えない。
+    """
+    return [
+        rule.id
+        for rule in config.rules
+        if rule.enabled and (rule.max_cycles > 1 or rule.stop_loss is not None)
+    ]
+
+
 def _nisa_warning(config: Config) -> str:
     """NISA 枠で回転売買をしようとしていたら警告する。
 
-    このボットは「買って売ってを繰り返す」「損切りする」前提で作ってある。
-    どちらも NISA とは相性が悪いので、気づかないまま実弾に進ませない。
+    買って持ち続けるだけの設定（config.core.yaml 系）では黙る。そこで警告を出すと
+    「NISA では何もするな」という誤ったメッセージになり、本当に危ない往復売買の
+    ときの警告まで読み飛ばされるようになる。
     """
     account = str(config.rss.order_defaults.get("account_type", ""))
     if "NISA" not in account.upper() and "ニーサ" not in account:
         return ""
+
+    rotating = _rotating_rules(config)
+    if not rotating:
+        return ""
+
     return (
-        f" 口座区分が「{account}」になっています。NISA 枠での自動売買には次の不利があります:\n"
+        f" 口座区分が「{account}」のまま、往復売買・損切りをするルールが有効になっています:\n"
+        f"   {', '.join(rotating)}\n"
+        "   NISA 枠でこれをやると次の不利があります:\n"
         "   * 売買を繰り返すと年間の投資枠をすぐ使い切ります（売っても枠が戻るのは翌年）\n"
         "   * 損益通算・繰越控除ができないため、損切りしても税金面の救済がありません\n"
-        "   本ボットは繰り返しと損切りを前提にしています。特定口座を勧めます。"
+        "   往復させる枠は特定口座を勧めます。NISA で回すなら、買って持ち続ける\n"
+        "   ルール（max_cycles: 1・stop_loss なし）だけにしてください。"
     )
 
 
@@ -672,13 +700,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kabu", description="楽天証券 RSS 自動売買ボット")
     parser.add_argument("-c", "--config", default="config.yaml", help="設定ファイル (既定: config.yaml)")
     parser.add_argument("-v", "--verbose", action="store_true", help="詳細ログ")
+
+    # -c と -v はサブコマンドの後ろに書いても効くようにする。
+    #   kabu -c config.core.yaml play    ← 前
+    #   kabu play -c config.core.yaml    ← 後ろ（こちらのほうが自然に打ってしまう）
+    # default を SUPPRESS にしているのが肝で、こうしないと「サブコマンド側の
+    # 既定値」が「前に書いて実際に指定された値」を上書きしてしまう。
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("-c", "--config", default=argparse.SUPPRESS,
+                        help="設定ファイル (既定: config.yaml)")
+    common.add_argument("-v", "--verbose", action="store_true", default=argparse.SUPPRESS,
+                        help="詳細ログ")
+
     sub = parser.add_subparsers(dest="command", required=True)
 
-    run = sub.add_parser("run", help="売買ループを開始する")
+    def add(name: str, **kwargs) -> argparse.ArgumentParser:
+        return sub.add_parser(name, parents=[common], **kwargs)
+
+    run = add("run", help="売買ループを開始する")
     run.add_argument("--yes", action="store_true", help="実弾モードの確認プロンプトを省略する")
     run.set_defaults(func=cmd_run)
 
-    play = sub.add_parser("play", help="ブラウザで動きが見えるシミュレーターを開く")
+    play = add("play", help="ブラウザで動きが見えるシミュレーターを開く")
     play.add_argument("--port", type=int, default=8765, help="待ち受けポート (既定: 8765)")
     play.add_argument("--host", default="127.0.0.1",
                       help="待ち受けアドレス (既定: 127.0.0.1)。"
@@ -705,7 +748,7 @@ def build_parser() -> argparse.ArgumentParser:
                       help="--source delayed で現在値を取り直す間隔（秒・最短 10）")
     play.set_defaults(func=cmd_play, anytime=True)
 
-    back = sub.add_parser(
+    back = add(
         "backtest", help="過去の実データで、このルールならどうなっていたかを見る"
     )
     back.add_argument("--days", type=int, default=1,
@@ -718,7 +761,7 @@ def build_parser() -> argparse.ArgumentParser:
                       help="取得した株価データの保存先")
     back.set_defaults(func=cmd_backtest)
 
-    opt = sub.add_parser(
+    opt = add(
         "optimize", help="過去データから、どの値幅設定が良かったかを総当たりで探す"
     )
     _add_symbol_options(opt)
@@ -733,7 +776,7 @@ def build_parser() -> argparse.ArgumentParser:
     opt.add_argument("--cache-dir", default=".kabu_cache", help="取得したデータの保存先")
     opt.set_defaults(func=cmd_optimize)
 
-    cmp_ = sub.add_parser("compare", help="売買手法そのものを並べて比べる")
+    cmp_ = add("compare", help="売買手法そのものを並べて比べる")
     _add_symbol_options(cmp_)
     cmp_.add_argument("--days", type=int, default=0,
                       help="直近何営業日ぶんで比べるか (既定: 0 = 取得できた全期間)")
@@ -744,9 +787,9 @@ def build_parser() -> argparse.ArgumentParser:
     cmp_.add_argument("--cache-dir", default=".kabu_cache", help="取得したデータの保存先")
     cmp_.set_defaults(func=cmd_compare)
 
-    sub.add_parser("status", help="現在の状態を表示する").set_defaults(func=cmd_status)
-    sub.add_parser("doctor", help="接続と設定を診断する").set_defaults(func=cmd_doctor)
-    sub.add_parser("init-sheet", help="RSS 用 Excel ブックの雛形を作る").set_defaults(func=cmd_init_sheet)
+    add("status", help="現在の状態を表示する").set_defaults(func=cmd_status)
+    add("doctor", help="接続と設定を診断する").set_defaults(func=cmd_doctor)
+    add("init-sheet", help="RSS 用 Excel ブックの雛形を作る").set_defaults(func=cmd_init_sheet)
     return parser
 
 

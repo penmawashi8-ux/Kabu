@@ -144,10 +144,15 @@ def test_order_status_parsing(text, expected):
 
 # ------------------------------------------------------- NISA 口座の取り違え
 
-def config_with_account(account: str) -> Config:
+ROTATING_RULE = {**MINIMAL["rules"][0], "max_cycles": 3, "stop_loss": 2700}
+HOLDING_RULE = {**MINIMAL["rules"][0], "max_cycles": 1}
+
+
+def config_with_account(account: str, rule: dict | None = None) -> Config:
     return Config.from_dict({
         **MINIMAL,
         "mode": "live",
+        "rules": [rule or ROTATING_RULE],
         "rss": {"order": {"defaults": {"account_type": account}}},
     })
 
@@ -161,6 +166,13 @@ def test_nisa_account_is_warned_about():
     assert "特定口座" in warning
 
 
+def test_nisa_warning_names_the_offending_rules():
+    """どのルールを直せばいいのかが分からないと、警告は読み飛ばされる。"""
+    from kabu.cli import _nisa_warning
+
+    assert "a" in _nisa_warning(config_with_account("NISA"))
+
+
 def test_nisa_warning_is_case_insensitive():
     from kabu.cli import _nisa_warning
 
@@ -172,3 +184,83 @@ def test_specific_account_is_not_warned_about():
 
     assert _nisa_warning(config_with_account("特定")) == ""
     assert _nisa_warning(Config.from_dict(MINIMAL)) == ""
+
+
+# 「買って持ち続けるだけ」は NISA の本来の使い道なので警告しない。
+# ここで警告を出すと「NISA では何もするな」に読めてしまい、本当に危ない
+# 往復売買のときの警告まで信用されなくなる。
+
+def test_buy_and_hold_in_nisa_is_not_warned_about():
+    from kabu.cli import _nisa_warning
+
+    assert _nisa_warning(config_with_account("NISA", HOLDING_RULE)) == ""
+
+
+def test_stop_loss_alone_is_enough_to_warn():
+    """損切りするなら往復しなくても損益通算の不利は効く。"""
+    from kabu.cli import _nisa_warning
+
+    rule = {**MINIMAL["rules"][0], "max_cycles": 1, "stop_loss": 2700}
+    assert _nisa_warning(config_with_account("NISA", rule))
+
+
+def test_disabled_rotating_rule_is_not_warned_about():
+    """無効なルールは発注しないので、警告の理由にならない。"""
+    from kabu.cli import _nisa_warning
+
+    rule = {**ROTATING_RULE, "enabled": False}
+    assert _nisa_warning(config_with_account("NISA", rule)) == ""
+
+
+def test_shipped_core_config_holds_instead_of_rotating():
+    """config.core.yaml は「買って持つ」枠。往復するルールが混ざったら気づきたい。"""
+    from pathlib import Path
+
+    from kabu.cli import _rotating_rules
+    from kabu.config import load_config
+
+    path = Path(__file__).resolve().parent.parent / "config.core.yaml"
+    config = load_config(path)
+    assert _rotating_rules(config) == []
+    assert all(r.max_cycles == 1 and r.stop_loss is None for r in config.rules)
+
+
+# ------------------------------------------------- -c をどこに書いても効くこと
+#
+# README は `kabu play -c config.simulate.yaml` の形で書いてある。以前は
+# トップレベルにしか -c が無く、この形だと "unrecognized arguments" で落ちていた。
+
+def test_config_flag_after_subcommand():
+    from kabu.cli import build_parser
+
+    args = build_parser().parse_args(["play", "-c", "config.core.yaml"])
+    assert args.config == "config.core.yaml"
+
+
+def test_config_flag_before_subcommand():
+    from kabu.cli import build_parser
+
+    args = build_parser().parse_args(["-c", "config.core.yaml", "doctor"])
+    assert args.config == "config.core.yaml"
+
+
+def test_subcommand_does_not_clobber_the_earlier_config_flag():
+    """サブコマンド側の既定値が、前に書いた指定を上書きしないこと。"""
+    from kabu.cli import build_parser
+
+    args = build_parser().parse_args(["-c", "config.core.yaml", "play"])
+    assert args.config == "config.core.yaml"
+
+
+def test_config_defaults_to_config_yaml():
+    from kabu.cli import build_parser
+
+    assert build_parser().parse_args(["doctor"]).config == "config.yaml"
+
+
+def test_verbose_works_on_either_side():
+    from kabu.cli import build_parser
+
+    assert build_parser().parse_args(["-v", "doctor"]).verbose is True
+    assert build_parser().parse_args(["doctor", "-v"]).verbose is True
+    assert build_parser().parse_args(["doctor"]).verbose is False

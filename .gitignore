@@ -12,5 +12,10 @@ config.yaml
 state.json
 logs/
 journal.csv
+# コア（config.core.yaml）とシミュレーターの状態・記録も同じ扱い
+core_state.json
+core_journal.csv
+play_state.json
+play_journal.csv
 STOP
 ~$*.xlsx
