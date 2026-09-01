@@ -91,14 +91,21 @@ def run_portfolio(
     lookback: int = 120,
     tax_pct: float = 20.315,
     slippage_pct: float = 0.05,
+    unit: int = LOT,
 ) -> PortfolioResult:
     """N 銘柄を同時に持ち、一定間隔で入れ替える。
+
+    unit: 何株単位で買えるか。既定は単元株（100 株）。単元未満株の仕組みを
+          使う場合は 1 を渡す（ただし実際の取扱条件・スプレッドは要確認）。
 
     select="momentum" なら過去 lookback 日の騰落率で上位を選ぶ。
     select="equal" なら（並べ替えず）先頭から N 銘柄を等ウェイトで持ち続ける。
     """
-    name = ("モメンタム上位 {n} 銘柄・{r} 日ごと入替" if select == "momentum"
-            else "等ウェイト {n} 銘柄・{r} 日ごと入替").format(n=hold, r=rebalance_days)
+    unit = max(1, unit)
+    suffix = "" if unit == LOT else f"・{unit} 株単位"
+    name = ("モメンタム上位 {n} 銘柄・{r} 日ごと入替{s}" if select == "momentum"
+            else "等ウェイト {n} 銘柄・{r} 日ごと入替{s}").format(
+                n=hold, r=rebalance_days, s=suffix)
     result = PortfolioResult(name=name)
 
     by_day = _closes_by_day(bars)
@@ -159,14 +166,14 @@ def run_portfolio(
             budget = cash / len(wanted)
             for symbol in wanted:            # candidates の順 = 優先順位
                 price = prices_tomorrow[symbol].open * (1 + slippage_pct / 100)
-                lot_cost = price * LOT
+                lot_cost = price * unit
                 lots = int(budget // lot_cost)
                 if lots < 1 and cash >= lot_cost:
                     lots = 1
                 if lots < 1:
                     result.skipped_capital = True
                     continue
-                shares = lots * LOT
+                shares = lots * unit
                 cost = shares * price
                 if cost > cash:
                     continue
