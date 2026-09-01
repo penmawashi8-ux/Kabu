@@ -118,3 +118,14 @@ def test_index_baseline_is_taxed_on_gains_only():
     net, _ = equal_weight_index(rising, tax_pct=20.0)
     assert net < gross
     assert abs(net - gross * 0.8) < 1e-6
+
+
+def test_fractional_shares_allow_real_diversification_on_small_capital():
+    """単元未満株（1 株単位）なら、少額でも銘柄数を増やせること。"""
+    bars = _universe(10, base=3000.0)      # 1 単元 30 万円
+    lots = run_portfolio(bars, capital=500_000, hold=10, select="equal", lookback=60)
+    single = run_portfolio(bars, capital=500_000, hold=10, select="equal",
+                           lookback=60, unit=1)
+
+    assert lots.average_names <= 2, "50 万円では単元株で 1〜2 銘柄しか持てない"
+    assert single.average_names > lots.average_names

@@ -859,17 +859,21 @@ def cmd_portfolio(args: argparse.Namespace) -> int:
           f"（税金 {args.tax:g}% と滑り {args.slippage:g}%/回 を引いた後）")
 
     plans = [
-        ("equal", args.hold),
-        ("momentum", args.hold),
-        ("momentum", max(1, args.hold * 2)),
+        ("equal", args.hold, 100),
+        ("momentum", args.hold, 100),
+        ("momentum", max(1, args.hold * 2), 100),
     ]
+    if args.fractional:
+        # 単元未満株が使えるなら、同じ資金でも銘柄数を増やせる。
+        plans += [("equal", args.hold * 4, 1), ("momentum", args.hold * 4, 1)]
+
     results = [
         run_portfolio(
             bars, capital=args.capital, hold=hold, rebalance_days=args.rebalance,
             select=select, lookback=args.lookback,
-            tax_pct=args.tax, slippage_pct=args.slippage,
+            tax_pct=args.tax, slippage_pct=args.slippage, unit=unit,
         )
-        for select, hold in plans
+        for select, hold, unit in plans
     ]
 
     print(f"\n{'=' * 78}")
@@ -905,6 +909,27 @@ def cmd_portfolio(args: argparse.Namespace) -> int:
             print("  → 1 銘柄持ちっぱなしの中央値にも勝てていません。")
         else:
             print("  → 両方の基準を上回りました。ただし 1 期間の結果にすぎません。")
+
+    if args.sweep:
+        print(f"\n{'=' * 78}")
+        print(f"■ 銘柄数を変えたときの効果（資金 {args.capital:,.0f} 円・買い持ち）")
+        print(f"{'-' * 78}")
+        print(_pad("狙った銘柄数", 18) + _rpad("単元株", 26) + _rpad("1 株単位（単元未満株）", 26))
+        print(_pad("", 18) + _rpad("損益 / 下落 / 実際の数", 26)
+              + _rpad("損益 / 下落 / 実際の数", 26))
+        for want in (1, 2, 3, 5, 10, 20, 30):
+            cells = ""
+            for unit in (100, 1):
+                r = run_portfolio(
+                    bars, capital=args.capital, hold=want, rebalance_days=args.rebalance,
+                    select="equal", lookback=args.lookback,
+                    tax_pct=args.tax, slippage_pct=args.slippage, unit=unit,
+                )
+                cells += (f"{r.return_pct:>+7.0f}% {r.max_drawdown_pct:>6.0f}%"
+                          f" {r.average_names:>5.1f}銘柄  ") if r.equity else _rpad("—", 26)
+            print(_pad(f"{want} 銘柄", 18) + cells)
+        print("\n  分散の効果は「最大下落」に出ます。銘柄数を増やしても下落幅が")
+        print("  縮まらないなら、それは分散になっていません（同じ値動きの銘柄ばかり等）。")
 
     if any(r.skipped_capital for r in results):
         print(f"\n  ※ 資金 {args.capital:,.0f} 円では買えなかった銘柄があります。")
@@ -1030,6 +1055,10 @@ def build_parser() -> argparse.ArgumentParser:
     pf.add_argument("--hold", type=int, default=5, help="同時に持つ銘柄数 (既定: 5)")
     pf.add_argument("--rebalance", type=int, default=20,
                     help="何営業日ごとに入れ替えるか (既定: 20)")
+    pf.add_argument("--fractional", action="store_true",
+                    help="単元未満株（1 株単位）で買える前提の組み方も試す")
+    pf.add_argument("--sweep", action="store_true",
+                    help="銘柄数を 1〜30 に振って、分散がどこまで効くかを出す")
     pf.add_argument("--lookback", type=int, default=120,
                     help="モメンタムを測る期間 (既定: 120 営業日)")
     pf.add_argument("--days", type=int, default=0, help="直近何営業日ぶんで見るか (既定: 全期間)")
