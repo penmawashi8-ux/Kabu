@@ -36,6 +36,9 @@ _TIMEOUT = 20
 _USER_AGENT = "kabu/0.1 (personal trading simulator)"
 _CACHE_MAX_AGE_SEC = 6 * 3600
 
+# 手法の検証には、上げ相場だけでなく下げ相場も要る。2 年では足りない。
+DEFAULT_YEARS = 10
+
 
 class MarketDataError(KabuError):
     """株価データを取得・解釈できなかった。"""
@@ -195,17 +198,17 @@ def parse_yahoo_json(payload: str) -> list[Bar]:
 
 # --------------------------------------------------------------------- 取得
 
-def _stooq_url(symbol: str) -> str:
-    # "7203.T" → "7203.jp"
+def _stooq_url(symbol: str, years: int = DEFAULT_YEARS) -> str:
+    # "7203.T" → "7203.jp"。stooq は全期間を返すので years は使わない。
     code = symbol.split(".")[0].lower()
     return f"https://stooq.com/q/d/l/?s={code}.jp&i=d"
 
 
-def _yahoo_url(symbol: str) -> str:
+def _yahoo_url(symbol: str, years: int = DEFAULT_YEARS) -> str:
     code = symbol if "." in symbol else f"{symbol}.T"
     return (
         f"https://query1.finance.yahoo.com/v8/finance/chart/{code}"
-        "?range=2y&interval=1d"
+        f"?range={max(1, years)}y&interval=1d"
     )
 
 
@@ -255,6 +258,7 @@ def fetch_bars(
     provider: str = "stooq",
     cache_dir: str | Path = ".kabu_cache",
     max_age_sec: float = _CACHE_MAX_AGE_SEC,
+    years: int = DEFAULT_YEARS,
 ) -> list[Bar]:
     """1 銘柄の日足を取ってくる。取得できたらディスクに残して使い回す。"""
     if provider not in PROVIDERS:
@@ -263,14 +267,15 @@ def fetch_bars(
         )
     url_of, parse = PROVIDERS[provider]
 
-    cache = Path(cache_dir) / f"{symbol.replace('.', '_')}-{provider}.txt"
+    # 期間が違えば中身も違うので、キャッシュも分ける。
+    cache = Path(cache_dir) / f"{symbol.replace('.', '_')}-{provider}-{years}y.txt"
     if cache.exists() and time.time() - cache.stat().st_mtime < max_age_sec:
         try:
             return parse(cache.read_text(encoding="utf-8"))
         except MarketDataError:
             pass  # 壊れたキャッシュは取り直す
 
-    raw = _download(url_of(symbol))
+    raw = _download(url_of(symbol, years))
     bars = parse(raw)   # 解釈できたものだけ保存する
     try:
         cache.parent.mkdir(parents=True, exist_ok=True)
@@ -285,6 +290,7 @@ def fetch_many(
     *,
     provider: str = "stooq",
     cache_dir: str | Path = ".kabu_cache",
+    years: int = DEFAULT_YEARS,
     pause: float = 0.0,
     on_progress: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, list[Bar]]:
@@ -299,7 +305,8 @@ def fetch_many(
         if on_progress:
             on_progress(i, len(symbols), symbol)
         try:
-            out[symbol] = fetch_bars(symbol, provider=provider, cache_dir=cache_dir)
+            out[symbol] = fetch_bars(symbol, provider=provider,
+                                     cache_dir=cache_dir, years=years)
             log.info("%s: %d 日ぶんの実データを読み込みました", symbol, len(out[symbol]))
         except MarketDataError as exc:
             errors.append(f"{symbol}: {exc}")

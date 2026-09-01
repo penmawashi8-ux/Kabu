@@ -145,3 +145,35 @@ def pytest_approx(value, tol=1e-6):
         def __eq__(self, other): return abs(other - value) < tol
         def __repr__(self): return f"≈{value}"
     return _Approx()
+
+
+# ---------------------------------------------- 対照実験とパラメータ感度
+
+def test_random_trades_makes_the_requested_number_of_trades():
+    """対照実験は、比べる手法と同じ回数・同じ保有日数で回す。"""
+    from kabu.research import random_trades
+
+    bars = _bars([100 + (i % 11) for i in range(300)])
+    outcome = random_trades(bars, trades=10, hold_days=5, seed=1)
+    assert 1 <= outcome.trades <= 10
+    holds = [
+        (p.exit_day - p.entry_day).days for p in outcome.positions if p.exit_day
+    ]
+    assert all(h >= 5 for h in holds[:-1]), "指定した日数は保有すること"
+
+
+def test_random_trades_is_reproducible():
+    from kabu.research import random_trades
+
+    bars = _bars([100 + (i % 11) for i in range(300)])
+    first = random_trades(bars, trades=10, hold_days=5, seed=7)
+    second = random_trades(bars, trades=10, hold_days=5, seed=7)
+    assert [p.entry_day for p in first.positions] == [p.entry_day for p in second.positions]
+
+
+def test_atr_variants_cover_a_grid():
+    from kabu.research import atr_variants
+
+    variants = atr_variants()
+    assert len(variants) == 27
+    assert len({name for name, _ in variants}) == len(variants)
