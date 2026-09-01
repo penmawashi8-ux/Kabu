@@ -7,6 +7,7 @@
     kabu backtest    過去の実データでルールを検証する（発注しない）
     kabu optimize    過去データから良かった値幅設定を総当たりで探す
     kabu compare     売買手法そのもの（トレンド追随・逆張り等）を比べる
+    kabu validate    その手法の優位が本物か、感度・対照実験・期間別で確かめる
 """
 
 from __future__ import annotations
@@ -329,6 +330,7 @@ def _fetch_with_fallback(symbols: list[str], args: argparse.Namespace):
         try:
             bars = fetch_many(
                 symbols, provider=provider, cache_dir=args.cache_dir,
+                years=getattr(args, "years", 10),
                 # まとめて取るときは間を置く（取得元に制限をかけられないように）。
                 pause=0.2 if many else 0.0,
                 on_progress=progress if many else None,
@@ -699,6 +701,136 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_validate(args: argparse.Namespace) -> int:
+    """ある手法の優位が本物か、3 つの角度から確かめる（発注しない）。
+
+    1. パラメータをずらしても成立するか（たまたま噛み合っただけではないか）
+    2. でたらめな売買（対照実験）に勝てるか
+    3. どの期間でも成立するか（上げ相場だけで勝っていないか）
+    """
+    import statistics
+
+    from .research import atr_band, atr_variants, buy_and_hold, random_trades, split_periods
+
+    config = load_config(args.config)
+    setup_logging(config.log_file, verbose=args.verbose, timezone=config.market.timezone)
+    quiet_analysis(args.verbose)
+
+    symbols = _resolve_symbols(config, args)
+    bars = _fetch_with_fallback(symbols, args)
+    if bars is None:
+        return 1
+
+    series_by_symbol = {
+        sym: (data[-args.days:] if args.days else data)
+        for sym, data in bars.items() if len(data) >= 260
+    }
+    if not series_by_symbol:
+        print("\n検証できる銘柄がありませんでした（1 銘柄あたり 260 営業日ぶん以上が要ります）。")
+        return 1
+
+    def net(outcome) -> float:
+        return outcome.net_return_pct(tax_pct=args.tax, slippage_pct=args.slippage)
+
+    days = statistics.median(len(v) for v in series_by_symbol.values())
+    print(f"\n{len(series_by_symbol)} 銘柄 × 約 {days:.0f} 営業日で検証します"
+          f"（税金 {args.tax:g}% と滑り {args.slippage:g}%/回 を引いた後）")
+
+    hold = {sym: net(buy_and_hold(v)) for sym, v in series_by_symbol.items()}
+    hold_median = statistics.median(hold.values())
+
+    # ---------------------------------------------------------- 1. 感度
+    print(f"\n{'=' * 78}")
+    print("■ 1. パラメータをずらしても成立するか")
+    print(f"{'-' * 78}")
+    print("  少し動かしただけで崩れるなら、その成績はたまたま噛み合っただけです。")
+    print(f"  比較の基準 — 持ちっぱなしの中央値: {hold_median:+.1f}%\n")
+    print(_pad("設定", 34) + _rpad("中央値", 9) + _rpad("持ちに勝った銘柄", 18))
+
+    survived = 0
+    variants = atr_variants()
+    for name, params in variants:
+        results = {sym: net(atr_band(v, **params)) for sym, v in series_by_symbol.items()}
+        median = statistics.median(results.values())
+        beat = sum(1 for sym, value in results.items() if value > hold[sym])
+        if median > hold_median:
+            survived += 1
+        mark = "○" if median > hold_median else "×"
+        print(_pad(f"{mark} {name}", 34) + f"{median:>+8.1f}%"
+              + f"{beat:>10} / {len(results):<6}")
+    print(f"\n  {len(variants)} 通り中 {survived} 通りで、持ちっぱなしの中央値を上回りました。")
+    if survived >= len(variants) * 0.7:
+        print("  → パラメータに依存していません。手法そのものの性質と考えてよさそうです。")
+    elif survived <= len(variants) * 0.3:
+        print("  → ほとんどの設定で負けています。最初の結果はたまたまです。")
+    else:
+        print("  → 設定によって結果が変わります。優位があるとしても弱いものです。")
+
+    # ------------------------------------------------------- 2. 対照実験
+    print(f"\n{'=' * 78}")
+    print("■ 2. でたらめな売買（対照実験）に勝てるか")
+    print(f"{'-' * 78}")
+    print("  同じ回数・同じ保有日数でランダムに売買した場合と比べます。")
+    print("  これに勝てないなら、勝因は判断ではなく「市場に居た時間」です。\n")
+
+    real_values, random_values = [], []
+    for sym, v in series_by_symbol.items():
+        outcome = atr_band(v)
+        real_values.append(net(outcome))
+        holds = [
+            (p.exit_day - p.entry_day).days
+            for p in outcome.positions if p.exit_day and p.entry_day
+        ]
+        # 同じ条件に揃えるため、実際の売買回数と保有日数を対照実験に渡す。
+        placebo = [
+            net(random_trades(v, trades=max(1, outcome.trades),
+                              hold_days=max(1, int(statistics.median(holds))) if holds else 10,
+                              seed=seed))
+            for seed in range(args.rounds)
+        ]
+        random_values.append(statistics.median(placebo))
+
+    real_median = statistics.median(real_values)
+    random_median = statistics.median(random_values)
+    print(f"  ATR 連動バンド      : {real_median:+.1f}%")
+    print(f"  ランダム売買（{args.rounds} 回の中央値）: {random_median:+.1f}%")
+    print(f"  差                  : {real_median - random_median:+.1f}%")
+    if real_median > random_median:
+        print("  → でたらめより良い結果です。判断に意味がある可能性があります。")
+    else:
+        print("  → でたらめに勝てていません。この手法の売買判断には意味がありません。")
+
+    # ------------------------------------------------------- 3. 期間別
+    print(f"\n{'=' * 78}")
+    print(f"■ 3. どの期間でも成立するか（{args.periods} 等分）")
+    print(f"{'-' * 78}")
+    print(_pad("期間", 12) + _rpad("ATR 連動", 12) + _rpad("持ちっぱなし", 16) + _rpad("差", 9))
+    wins = 0
+    for slot in range(args.periods):
+        mine, theirs = [], []
+        for v in series_by_symbol.values():
+            parts = split_periods(v, args.periods)
+            if slot >= len(parts) or len(parts[slot]) < 60:
+                continue
+            mine.append(net(atr_band(parts[slot])))
+            theirs.append(net(buy_and_hold(parts[slot])))
+        if not mine:
+            continue
+        a, b = statistics.median(mine), statistics.median(theirs)
+        wins += 1 if a > b else 0
+        print(_pad(f"期間 {slot + 1}", 12) + f"{a:>+11.1f}%{b:>+15.1f}%{a - b:>+8.1f}%")
+    print(f"\n  {args.periods} 期間中 {wins} 期間で持ちっぱなしを上回りました。")
+
+    print(f"\n{'=' * 78}")
+    print("結論の出し方")
+    print(f"{'-' * 78}")
+    print("  3 つとも通ったときだけ、実装に進む価値があります。")
+    print("  1 つでも落ちたら、その優位は偶然か、特定の相場つきに限った話です。")
+    print("  なお、ここで通っても将来を保証するものではありません。")
+    print("  過去に成立した性質が、これからも続くとは限らないためです。")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kabu", description="楽天証券 RSS 自動売買ボット")
     parser.add_argument("-c", "--config", default="config.yaml", help="設定ファイル (既定: config.yaml)")
@@ -745,6 +877,8 @@ def build_parser() -> argparse.ArgumentParser:
     back.add_argument("--until", help="この日まで回す (YYYY-MM-DD)")
     back.add_argument("--provider", choices=("stooq", "yahoo"), default="stooq",
                       help="株価データの取得元 (既定: stooq)")
+    back.add_argument("--years", type=int, default=10,
+                      help="何年ぶんのデータを取るか (既定: 10)")
     back.add_argument("--cache-dir", default=".kabu_cache",
                       help="取得した株価データの保存先")
     back.set_defaults(func=cmd_backtest)
@@ -761,6 +895,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="何営業日ごとに線を引き直すか (既定: 20)")
     opt.add_argument("--provider", choices=("stooq", "yahoo"), default="yahoo",
                      help="株価データの取得元 (既定: yahoo)")
+    opt.add_argument("--years", type=int, default=10,
+                      help="何年ぶんのデータを取るか (既定: 10)")
     opt.add_argument("--cache-dir", default=".kabu_cache", help="取得したデータの保存先")
     opt.set_defaults(func=cmd_optimize)
 
@@ -778,8 +914,23 @@ def build_parser() -> argparse.ArgumentParser:
                       help="期間を何等分して安定性を見るか (既定: 3。1 で無効)")
     cmp_.add_argument("--provider", choices=("stooq", "yahoo"), default="yahoo",
                       help="株価データの取得元 (既定: yahoo)")
+    cmp_.add_argument("--years", type=int, default=10,
+                      help="何年ぶんのデータを取るか (既定: 10)")
     cmp_.add_argument("--cache-dir", default=".kabu_cache", help="取得したデータの保存先")
     cmp_.set_defaults(func=cmd_compare)
+
+    val = sub.add_parser("validate", help="手法の優位が本物か、感度・対照実験・期間別で確かめる")
+    _add_symbol_options(val)
+    val.add_argument("--days", type=int, default=0, help="直近何営業日ぶんで見るか (既定: 全期間)")
+    val.add_argument("--periods", type=int, default=4, help="期間を何等分するか (既定: 4)")
+    val.add_argument("--rounds", type=int, default=5, help="対照実験を何回まわすか (既定: 5)")
+    val.add_argument("--tax", type=float, default=20.315, help="利益にかかる税率%% (既定: 20.315)")
+    val.add_argument("--slippage", type=float, default=0.05, help="1 回の売買で滑る%% (既定: 0.05)")
+    val.add_argument("--years", type=int, default=10, help="何年ぶんのデータを取るか (既定: 10)")
+    val.add_argument("--provider", choices=("stooq", "yahoo"), default="yahoo",
+                     help="株価データの取得元 (既定: yahoo)")
+    val.add_argument("--cache-dir", default=".kabu_cache", help="取得したデータの保存先")
+    val.set_defaults(func=cmd_validate)
 
     sub.add_parser("status", help="現在の状態を表示する").set_defaults(func=cmd_status)
     sub.add_parser("doctor", help="接続と設定を診断する").set_defaults(func=cmd_doctor)

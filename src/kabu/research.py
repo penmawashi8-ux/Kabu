@@ -350,3 +350,63 @@ def summarize(outcomes: list[Outcome]) -> dict[str, float]:
     """比較しやすいように、全体の中央値などを返す。"""
     returns = [o.return_pct for o in outcomes]
     return {"median_return": statistics.median(returns) if returns else 0.0}
+
+def random_trades(bars: list[Bar], *, trades: int = 20, hold_days: int = 10, seed: int = 0) -> Outcome:
+    """でたらめに売買する。**手法に意味があるかを確かめるための対照実験。**
+
+    同じ回数・同じ保有日数でランダムに売買したときの成績。ある手法がこれに
+    勝てないなら、勝っていたのは「判断」ではなく「株式市場に居た時間」で
+    説明がつく、ということになる（薬の試験でいう偽薬）。
+    """
+    import random
+
+    rng = random.Random(seed)
+    entries = sorted(rng.sample(range(len(bars) - 1), min(trades, max(1, len(bars) - 2))))
+    schedule = {i: False for i in entries}
+    held_until = [0]
+
+    def decide(i: int, holding: bool) -> str | None:
+        if not holding:
+            return "buy" if i in schedule else None
+        if i >= held_until[0]:
+            return "sell"
+        return None
+
+    outcome = Outcome(name=f"ランダム売買（{trades}回・{hold_days}日保有）", total_days=len(bars))
+    position: Position | None = None
+    for i in range(len(bars) - 1):
+        execution = bars[i + 1]
+        if position is None and i in schedule:
+            position = Position(entry_day=execution.day, entry_price=execution.open)
+            outcome.positions.append(position)
+            held_until[0] = i + hold_days
+        elif position is not None and i >= held_until[0]:
+            position.exit_day = execution.day
+            position.exit_price = execution.open
+            position = None
+        if position is not None:
+            outcome.exposure_days += 1
+            outcome.equity.append(execution.close / position.entry_price * 100)
+        else:
+            outcome.equity.append(outcome.equity[-1] if outcome.equity else 100.0)
+    if position is not None:
+        position.exit_day = bars[-1].day
+        position.exit_price = bars[-1].close
+    return outcome
+
+
+def atr_variants() -> list[tuple[str, dict]]:
+    """ATR 連動バンドのパラメータをずらした組み合わせ。
+
+    少し動かしただけで結果が崩れるなら、その成績はたまたま噛み合っただけ。
+    どれで回しても同じ傾向なら、手法そのものの性質と考えてよい。
+    """
+    out: list[tuple[str, dict]] = []
+    for period in (10, 14, 20):
+        for buy_mult in (0.5, 1.0, 1.5):
+            for sell_mult in (1.5, 2.0, 3.0):
+                out.append((
+                    f"ATR({period}) 買{buy_mult:g}/売{sell_mult:g}",
+                    dict(period=period, buy_mult=buy_mult, sell_mult=sell_mult, stop_mult=2.0),
+                ))
+    return out
