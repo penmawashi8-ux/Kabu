@@ -576,11 +576,16 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
     # 銘柄ごとの結果を集める（画面には出さず、まず全体を集計する）。
     per_symbol: dict[str, list] = {}
+    trimmed: dict[str, list] = {}
     for symbol in sorted(bars):
         series = bars[symbol][-args.days:] if args.days else bars[symbol]
         if len(series) < 220:
             continue
+        trimmed[symbol] = series
         per_symbol[symbol] = compare(series)
+
+    def net(outcome) -> float:
+        return outcome.net_return_pct(tax_pct=args.tax, slippage_pct=args.slippage)
 
     if not per_symbol:
         print("\n比べられる銘柄がありませんでした（各銘柄 220 営業日ぶん以上のデータが要ります）。")
@@ -591,19 +596,19 @@ def cmd_compare(args: argparse.Namespace) -> int:
     span = f"{len(per_symbol)} 銘柄"
 
     print(f"\n{'=' * 78}")
-    print(f"■ 手法ごとの成績（{span}の平均）")
+    print(f"■ 手法ごとの成績（{span}の平均・税金 {args.tax:g}% と滑り {args.slippage:g}%/回 を引いた後）")
     print(f"{'-' * 78}")
     print(_pad("手法", 40) + _rpad("平均損益", 9) + _rpad("中央値", 8)
           + _rpad("勝った銘柄", 11) + _rpad("平均下落", 9))
 
-    hold_by_symbol = {sym: outs[0].return_pct for sym, outs in per_symbol.items()}
+    hold_by_symbol = {sym: net(outs[0]) for sym, outs in per_symbol.items()}
     ranking: list[tuple[str, float, int]] = []
     for i, name in enumerate(names):
-        returns = [outs[i].return_pct for outs in per_symbol.values()]
+        returns = [net(outs[i]) for outs in per_symbol.values()]
         drawdowns = [outs[i].max_drawdown_pct for outs in per_symbol.values()]
         beat_hold = sum(
             1 for sym, outs in per_symbol.items()
-            if outs[i].return_pct > hold_by_symbol[sym]
+            if net(outs[i]) > hold_by_symbol[sym]
         )
         average = sum(returns) / len(returns)
         ranking.append((name, average, beat_hold))
@@ -621,6 +626,30 @@ def cmd_compare(args: argparse.Namespace) -> int:
             continue
         print(f"    {_pad(name, 44)}{beat_hold:>3} / {len(per_symbol)} 銘柄")
 
+    if args.periods > 1:
+        from .research import split_periods
+
+        print(f"\n{'=' * 78}")
+        print(f"■ 期間を {args.periods} 等分したときの平均損益（相場つきに左右されていないか）")
+        print(f"{'-' * 78}")
+        chunks: list[list[list[float]]] = [[] for _ in range(args.periods)]
+        for symbol, series in trimmed.items():
+            for slot, part in enumerate(split_periods(series, args.periods)):
+                if len(part) < 220 // args.periods:
+                    continue
+                chunks[slot].append([net(o) for o in compare(part)])
+        header = "".join(_rpad(f"期間{i + 1}", 10) for i in range(args.periods))
+        print(_pad("手法", 40) + header)
+        for i, name in enumerate(names):
+            cells = ""
+            for slot in range(args.periods):
+                values = [row[i] for row in chunks[slot]]
+                cells += f"{sum(values) / len(values):>+9.1f}%" if values else _rpad("—", 10)
+            print(_pad(name, 40) + cells)
+        print("\n  どの期間でも持ちっぱなしを上回る手法だけが、相場つきに関係なく効いています。")
+        print("  ※ 200 日線のように長い準備期間が要る手法は、区間が短いと売買が成立せず")
+        print("     0.0% と出ます。強い/弱いではなく「測れていない」という意味です。")
+
     # 一番成績の良かった手法（持ちっぱなしを除く）で、銘柄ごとの上位を出す。
     best_name, _best_avg, _ = max(
         (r for r in ranking if r[0] != "持ちっぱなし"), key=lambda r: r[1]
@@ -628,7 +657,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
     best_index = names.index(best_name)
     rows = sorted(
         (
-            (sym, outs[best_index].return_pct, hold_by_symbol[sym], outs[best_index].trades)
+            (sym, net(outs[best_index]), hold_by_symbol[sym], outs[best_index].trades)
             for sym, outs in per_symbol.items()
         ),
         key=lambda row: row[1] - row[2], reverse=True,
@@ -662,9 +691,11 @@ def cmd_compare(args: argparse.Namespace) -> int:
     print("    合わせて調整はしていません（調整すると必ず良く見えてしまうため）。")
     print("  * 「平均下落」= 評価額の山からの最大下落率の平均。どれだけ含み損に")
     print("    耐える必要があったか。損益が同じなら、小さいほうが良い手法です。")
-    print("  * 税金（利益の約 20.315%）と滑りは含んでいません。売買が多い手法ほど不利です。")
+    print(f"  * 数字は税金 {args.tax:g}% と滑り {args.slippage:g}%/回 を引いた後です。")
+    print("    税金は同じ期間の損益を通算した後の利益にだけかけています（特定口座に合わせています）。")
+    print("    持ちっぱなしは最後に 1 回課税されるだけなので、売買が多い手法ほど不利になります。")
     print("  * 持ちっぱなしに勝てない手法は、手間とリスクを増やしているだけです。")
-    print("  * 銘柄ごとの内訳は --detail を付けると出ます。")
+    print("  * 銘柄ごとの内訳は --detail、税引前で見たいときは --tax 0 --slippage 0 を付けてください。")
     return 0
 
 
@@ -739,6 +770,12 @@ def build_parser() -> argparse.ArgumentParser:
                       help="直近何営業日ぶんで比べるか (既定: 0 = 取得できた全期間)")
     cmp_.add_argument("--top", type=int, default=15, help="銘柄別に並べる件数 (既定: 15)")
     cmp_.add_argument("--detail", action="store_true", help="銘柄ごとの内訳も全部出す")
+    cmp_.add_argument("--tax", type=float, default=20.315,
+                      help="利益にかかる税率%% (既定: 20.315。0 にすると税引前)")
+    cmp_.add_argument("--slippage", type=float, default=0.05,
+                      help="1 回の売買で滑る%% (既定: 0.05。買いと売りで 2 回ぶん引く)")
+    cmp_.add_argument("--periods", type=int, default=3,
+                      help="期間を何等分して安定性を見るか (既定: 3。1 で無効)")
     cmp_.add_argument("--provider", choices=("stooq", "yahoo"), default="yahoo",
                       help="株価データの取得元 (既定: yahoo)")
     cmp_.add_argument("--cache-dir", default=".kabu_cache", help="取得したデータの保存先")
