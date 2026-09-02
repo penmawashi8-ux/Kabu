@@ -162,7 +162,15 @@ def parse_stooq_quote(text: str) -> tuple[float, datetime | None]:
 
 
 def parse_yahoo_json(payload: str) -> list[Bar]:
-    """Yahoo Finance のチャート API の応答を読む。"""
+    """Yahoo Finance のチャート API の応答を読む。
+
+    **株式分割・配当で調整した値段を使う。** 生の値段（indicators.quote）を
+    そのまま読むと、1:3 の分割が「1 日で -67% の暴落」として記録される。
+    日本株は分割が多いので、検証結果が丸ごと狂う。
+
+    Yahoo は調整後の終値（adjclose）を別に返してくるので、
+    「調整後終値 ÷ 生の終値」の比率を四本値すべてに掛けて揃える。
+    """
     try:
         data = json.loads(payload)
         result = data["chart"]["result"][0]
@@ -174,11 +182,23 @@ def parse_yahoo_json(payload: str) -> list[Bar]:
             f"    取得元の応答: {_snippet(payload)}"
         ) from exc
 
+    try:
+        adjusted = result["indicators"]["adjclose"][0]["adjclose"]
+    except (KeyError, IndexError, TypeError):
+        adjusted = None
+        log.warning("調整後の株価が取得できませんでした。"
+                    "株式分割が暴落として記録される可能性があります")
+
     bars: list[Bar] = []
     for i, stamp in enumerate(stamps):
         values = [quote[k][i] for k in ("open", "high", "low", "close")]
         if any(v is None for v in values):
             continue  # 立会がなかった日
+        if adjusted is not None:
+            adj = adjusted[i] if i < len(adjusted) else None
+            if adj is not None and values[3]:
+                ratio = adj / values[3]
+                values = [v * ratio for v in values]
         bars.append(
             Bar(
                 day=datetime.fromtimestamp(stamp).date(),
