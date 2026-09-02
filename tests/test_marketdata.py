@@ -339,3 +339,63 @@ def test_snippet_keeps_errors_readable():
     out = _snippet("a\n" * 500)
     assert len(out) <= 210
     assert "\n" not in out
+
+
+# ------------------------------------------- 株式分割・配当の調整
+
+def _yahoo_payload(closes, adjcloses):
+    import json as _json
+
+    return _json.dumps({"chart": {"result": [{
+        "timestamp": [1700000000 + i * 86400 for i in range(len(closes))],
+        "indicators": {
+            "quote": [{
+                "open": closes, "high": [c * 1.01 for c in closes],
+                "low": [c * 0.99 for c in closes], "close": closes,
+            }],
+            "adjclose": [{"adjclose": adjcloses}],
+        },
+    }]}})
+
+
+def test_split_is_not_recorded_as_a_crash():
+    """1:2 の分割が「-50% の暴落」にならないこと。
+
+    生の値段では 1000 → 500 に見えるが、調整後は連続した値動きになる。
+    """
+    from kabu.marketdata import parse_yahoo_json
+
+    raw = [1000.0, 1000.0, 500.0, 505.0]        # 3 日目に 1:2 分割
+    adjusted = [500.0, 500.0, 500.0, 505.0]      # 調整後は段差がない
+    bars = parse_yahoo_json(_yahoo_payload(raw, adjusted))
+
+    changes = [
+        (bars[i].close - bars[i - 1].close) / bars[i - 1].close
+        for i in range(1, len(bars))
+    ]
+    assert all(abs(c) < 0.1 for c in changes), f"段差が残っている: {changes}"
+
+
+def test_adjustment_scales_the_whole_bar():
+    """調整は終値だけでなく四本値すべてに掛かること（高値だけ生、は不整合）。"""
+    from kabu.marketdata import parse_yahoo_json
+
+    bars = parse_yahoo_json(_yahoo_payload([1000.0], [500.0]))
+    bar = bars[0]
+    assert abs(bar.close - 500.0) < 1e-6
+    assert bar.low < bar.close < bar.high, "四本値の関係が保たれること"
+    assert abs(bar.high - 505.0) < 1e-6
+
+
+def test_missing_adjclose_still_parses():
+    """調整後が無くても落ちない（警告して生の値段を使う）。"""
+    import json as _json
+
+    from kabu.marketdata import parse_yahoo_json
+
+    payload = _json.dumps({"chart": {"result": [{
+        "timestamp": [1700000000],
+        "indicators": {"quote": [{"open": [10.0], "high": [11.0],
+                                  "low": [9.0], "close": [10.0]}]},
+    }]}})
+    assert len(parse_yahoo_json(payload)) == 1
